@@ -1,0 +1,14 @@
+# @preset-id ruby
+# @preset-version 1
+# @preset-name Ruby
+# @preset-description Bundler dependencies, generated docs, and test caches.
+# @preset-safety safe
+
+.bundle/
+vendor/bundle/
+.yardoc/
+_yardoc/
+coverage/
+.rspec_status
+tmp/
+*.gem

@@ -1,0 +1,62 @@
+.root {
+  --status-color: var(--mantine-color-gray-6);
+
+  display: inline-flex;
+  gap: 0.45rem;
+  align-items: center;
+  color: var(--status-color);
+}
+
+.dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  background: currentColor;
+  border-radius: 50%;
+}
+
+.root[data-state="running"],
+.root[data-state="planning"],
+.root[data-state="queued"],
+.root[data-state="ready"] {
+  --status-color: var(--mantine-color-blue-8);
+}
+
+.root[data-state="succeeded"] {
+  --status-color: var(--mantine-color-green-9);
+}
+
+.root[data-state="paused"],
+.root[data-state="succeeded_with_warnings"] {
+  --status-color: var(--mantine-color-orange-9);
+}
+
+.root[data-state="failed"],
+.root[data-state="stopped"],
+.root[data-state="interrupted"],
+.root[data-state="stopping"] {
+  --status-color: var(--mantine-color-red-9);
+}
+
+:global([data-mantine-color-scheme="dark"]) .root[data-state="running"],
+:global([data-mantine-color-scheme="dark"]) .root[data-state="planning"],
+:global([data-mantine-color-scheme="dark"]) .root[data-state="queued"],
+:global([data-mantine-color-scheme="dark"]) .root[data-state="ready"] {
+  --status-color: var(--mantine-color-blue-4);
+}
+
+:global([data-mantine-color-scheme="dark"]) .root[data-state="succeeded"] {
+  --status-color: var(--mantine-color-green-4);
+}
+
+:global([data-mantine-color-scheme="dark"]) .root[data-state="paused"],
+:global([data-mantine-color-scheme="dark"])
+  .root[data-state="succeeded_with_warnings"] {
+  --status-color: var(--mantine-color-yellow-4);
+}
+
+:global([data-mantine-color-scheme="dark"]) .root[data-state="failed"],
+:global([data-mantine-color-scheme="dark"]) .root[data-state="stopped"],
+:global([data-mantine-color-scheme="dark"]) .root[data-state="interrupted"],
+:global([data-mantine-color-scheme="dark"]) .root[data-state="stopping"] {
+  --status-color: var(--mantine-color-red-4);
+}

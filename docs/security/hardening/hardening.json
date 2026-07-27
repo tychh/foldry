@@ -1,0 +1,61 @@
+{
+  "documentType": "codex-security.hardening-analysis",
+  "schemaVersion": "1.0",
+  "analysisId": "hardening_20260727_foldry_v1",
+  "sourceEvidence": {
+    "kind": "source_and_contract_collection",
+    "label": "Foldry archive, filesystem, persistence, and desktop trust boundaries",
+    "collectionSha256": "3bdd1729c77f4618b7d0bd95c289ddfc6ab74548824d71a4aef130eb352baeb4",
+    "artifactCount": 10,
+    "sourceDrift": "present",
+    "workingTreeBaseRevision": "028b0749fa38313bef8ba2a47ab091b1d8b1aee2"
+  },
+  "assessment": {
+    "outcome": "local_remediation_preferred",
+    "summary": "The reviewed controls already converge on owned scanner, executor, output, and IPC boundaries. Two execution-boundary trust assumptions were hardened locally; the evidence does not justify a new service or process boundary for v1."
+  },
+  "constraints": {
+    "profile": "balanced",
+    "changeHorizons": ["incremental"],
+    "nonNegotiables": [
+      "Never follow a source link while reading a planned regular file.",
+      "Never publish a partial archive over a working archive.",
+      "Do not grant the webview ambient filesystem or opener authority.",
+      "Do not transmit source paths or telemetry over the network."
+    ],
+    "assumptions": [
+      "The operating-system user who owns the Foldry configuration and output directory is trusted.",
+      "No process isolation or encrypted local history is required for v1.",
+      "No measured release performance budget was supplied; balanced local thresholds are recorded in docs/performance.md."
+    ]
+  },
+  "opportunities": [],
+  "localRemediations": [
+    {
+      "evidenceId": "E001",
+      "title": "Bind manifest entries to the selected source root",
+      "status": "implemented_and_regression_tested",
+      "change": "The executor validates normalized relative paths and the native path/source-root relationship before handling every manifest entry."
+    },
+    {
+      "evidenceId": "E001",
+      "title": "Open planned files without following replacement links",
+      "status": "implemented_and_regression_tested",
+      "change": "Regular files are opened with no-follow/reparse-point semantics and checked against the planned metadata and platform identity."
+    },
+    {
+      "evidenceId": "E008",
+      "title": "Meet WCAG contrast and progress naming requirements",
+      "status": "implemented_and_browser_validated",
+      "change": "Light/dark semantic colors now meet AA contrast and the aggregate progressbar has an accessible name."
+    }
+  ],
+  "residualRisks": [
+    "A same-user process can still race replacement of the output directory itself; eliminating that ambient path authority requires directory-handle APIs on every platform.",
+    "Foldry preserves symlink targets in archives. A downstream extractor must enforce its own destination containment policy.",
+    "Windows locked-file, long-path, and network-drive behavior and macOS packaging behavior still require execution on those operating systems."
+  ],
+  "openQuestions": [
+    "Who will execute and sign off the Windows and macOS manual smoke matrix before release?"
+  ]
+}

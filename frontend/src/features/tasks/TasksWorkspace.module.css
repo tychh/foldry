@@ -1,0 +1,494 @@
+.shell {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.workspace {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: 280px minmax(380px, 1fr) 320px;
+}
+
+.foldersPanel,
+.inspectorPanel,
+.unframedPanel {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.5rem;
+}
+
+.foldersPanel {
+  border-right: 1px solid var(--mantine-color-default-border);
+}
+
+.inspectorPanel {
+  overflow-y: auto;
+  border-left: 1px solid var(--mantine-color-default-border);
+  overscroll-behavior: contain;
+}
+
+.unframedPanel {
+  height: 100%;
+  padding: 0;
+}
+
+.tree {
+  min-height: 0;
+  flex: 1;
+}
+
+.treeRow {
+  display: grid;
+  width: 100%;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 0.25rem;
+  align-items: center;
+  padding-block: 0.35rem;
+  color: var(--mantine-color-text);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--mantine-radius-sm);
+}
+
+.treeRow[data-unavailable] {
+  opacity: 0.62;
+}
+
+.treeSelect {
+  display: flex;
+  min-width: 0;
+  gap: 0.45rem;
+  align-items: center;
+  padding: 0.2rem;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+
+.treeSelect:disabled {
+  cursor: not-allowed;
+}
+
+.treeAdd {
+  opacity: 0;
+}
+
+.treeRow:hover .treeAdd,
+.treeRow:focus-within .treeAdd {
+  opacity: 1;
+}
+
+.treeBadge {
+  max-width: 4.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.treeMessage {
+  display: block;
+  padding-block: 0.25rem;
+}
+
+.treeRow:hover,
+.treeRow:focus-visible {
+  background: var(--mantine-color-default-hover);
+}
+
+.treeLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskPanel {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.5rem;
+  overflow: hidden;
+}
+
+.taskScroll {
+  min-height: 0;
+  flex: 1;
+}
+
+.emptyState {
+  display: flex;
+  min-height: 300px;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.85rem;
+  align-items: center;
+  justify-content: center;
+  color: var(--mantine-color-dimmed);
+}
+
+.taskCard {
+  display: grid;
+  min-height: 150px;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 220px) auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 0;
+  border-color: var(--mantine-color-default-border);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.taskSelect {
+  display: grid;
+  min-width: 0;
+  min-height: 148px;
+  grid-column: 1;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem 1.5rem;
+  align-items: center;
+  padding: 1.25rem;
+  color: var(--mantine-color-text);
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+
+.taskCard:hover {
+  border-color: light-dark(
+    var(--mantine-color-gray-4),
+    var(--mantine-color-dark-3)
+  );
+  box-shadow: var(--mantine-shadow-xs);
+}
+
+.taskCard[data-selected] {
+  border-color: var(--mantine-primary-color-filled);
+  box-shadow: 0 0 0 1px
+    color-mix(in srgb, var(--mantine-primary-color-filled) 12%, transparent);
+}
+
+.taskSelect:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: -2px;
+}
+
+.taskIdentity {
+  display: flex;
+  min-width: 0;
+  grid-column: 1;
+  grid-row: 1;
+  gap: 0.9rem;
+  align-items: center;
+}
+
+.archiveIcon {
+  display: grid;
+  width: 3rem;
+  height: 3rem;
+  flex: 0 0 auto;
+  color: var(--mantine-primary-color-filled);
+  border: 1px solid
+    color-mix(in srgb, var(--mantine-primary-color-filled) 40%, transparent);
+  border-radius: var(--mantine-radius-md);
+  place-items: center;
+}
+
+.path {
+  overflow: hidden;
+  font-family: var(--mantine-font-family-monospace);
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskMeta {
+  display: grid;
+  grid-column: 1;
+  grid-row: 2;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.taskProgress {
+  min-width: 0;
+  grid-column: 2;
+  grid-row: 1;
+  padding: 1rem;
+  color: var(--mantine-color-text);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--mantine-radius-sm);
+}
+
+.taskProgress:hover,
+.taskProgress:focus-visible {
+  background: var(--mantine-color-default-hover);
+}
+
+.taskActions {
+  grid-column: 3;
+  grid-row: 1;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding-right: 1rem;
+}
+
+.collapsedRail {
+  display: flex;
+  width: 88px;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 1.5rem 0.5rem;
+  color: var(--mantine-color-text);
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: var(--mantine-color-body);
+  border: 0;
+  border-right: 1px solid var(--mantine-color-default-border);
+}
+
+.collapsedRail:last-child {
+  border-right: 0;
+  border-left: 1px solid var(--mantine-color-default-border);
+}
+
+.collapsedRail:hover,
+.collapsedRail:focus-visible {
+  color: var(--mantine-primary-color-filled);
+  background: var(--mantine-color-default-hover);
+}
+
+.commandBar {
+  display: grid;
+  min-height: 112px;
+  flex: 0 0 auto;
+  grid-template-columns:
+    minmax(180px, 0.9fr) minmax(175px, 0.8fr)
+    auto auto minmax(180px, 0.85fr);
+  gap: 1.25rem;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  background: var(--mantine-color-body);
+  border-top: 1px solid var(--mantine-color-default-border);
+}
+
+.summaryButton,
+.archiveSummary,
+.queueSummary,
+.globalActions {
+  padding-right: 1.25rem;
+  border-right: 1px solid var(--mantine-color-default-border);
+}
+
+.summaryButton {
+  color: var(--mantine-color-text);
+  text-align: left;
+  background: transparent;
+  border-top: 0;
+  border-bottom: 0;
+  border-left: 0;
+}
+
+.summaryButton:hover,
+.summaryButton:focus-visible {
+  color: var(--mantine-primary-color-filled);
+}
+
+.overallProgress {
+  min-width: 0;
+}
+
+.actionStep {
+  background: var(--mantine-color-default-hover);
+}
+
+.dropOverlay {
+  position: absolute;
+  z-index: 20;
+  display: grid;
+  color: var(--mantine-primary-color-filled);
+  background: color-mix(in srgb, var(--mantine-color-body) 88%, transparent);
+  border: 2px dashed var(--mantine-primary-color-filled);
+  border-radius: var(--mantine-radius-lg);
+  place-items: center;
+  align-content: center;
+  inset: 1rem;
+  pointer-events: none;
+}
+
+.workspace[data-dragging] {
+  position: relative;
+}
+
+@media (max-width: 89em) {
+  .commandBar {
+    grid-template-columns: minmax(170px, 0.8fr) auto auto minmax(180px, 0.8fr);
+  }
+
+  .archiveSummary {
+    display: none;
+  }
+}
+
+@media (max-width: 74.99em) {
+  .workspace {
+    grid-template-columns: 88px minmax(0, 1fr) 88px;
+  }
+
+  .taskCard {
+    grid-template-columns: minmax(0, 1fr) minmax(160px, 200px) auto;
+  }
+
+  .commandBar {
+    min-height: 138px;
+    grid-template-columns: 1fr auto;
+    gap: 0.85rem 1.25rem;
+  }
+
+  .summaryButton,
+  .queueSummary {
+    border-right: 0;
+  }
+
+  .queueSummary {
+    justify-self: end;
+  }
+
+  .globalActions {
+    padding-right: 0;
+    border-right: 0;
+  }
+}
+
+@media (max-width: 55em) {
+  .taskPanel {
+    padding: 1rem;
+  }
+
+  .taskCard {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .taskSelect {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .taskIdentity {
+    grid-column: 1;
+  }
+
+  .taskMeta {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .taskMeta > :last-child {
+    display: block;
+  }
+
+  .taskProgress {
+    grid-column: 1;
+    grid-row: 2;
+    margin: 0 1rem 1rem;
+  }
+
+  .taskActions {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 44em) {
+  .workspace {
+    grid-template-columns: 52px minmax(0, 1fr) 52px;
+  }
+
+  .collapsedRail {
+    width: 52px;
+    padding: 1rem 0.25rem;
+  }
+
+  .collapsedRail span {
+    overflow: hidden;
+    width: 1px;
+    height: 1px;
+    clip-path: inset(50%);
+  }
+
+  .taskPanel {
+    gap: 0.75rem;
+    padding: 0.75rem;
+  }
+
+  .taskPanel h1 {
+    font-size: 1.15rem;
+  }
+
+  .taskCard {
+    padding: 0;
+  }
+
+  .archiveIcon {
+    display: none;
+  }
+
+  .taskMeta {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .taskMeta > :last-child {
+    display: none;
+  }
+
+  .taskActions {
+    grid-column: 2;
+    grid-row: 1;
+    flex-direction: column;
+    justify-content: flex-start;
+  }
+
+  .commandBar {
+    min-height: 154px;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 0.75rem;
+  }
+
+  .summaryButton,
+  .queueSummary {
+    display: none;
+  }
+
+  .globalActions {
+    justify-content: stretch;
+  }
+
+  .globalActions button {
+    min-width: 0;
+    flex: 1;
+    padding-inline: 0.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .taskCard {
+    transition: none;
+  }
+}

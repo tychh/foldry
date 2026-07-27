@@ -1,0 +1,21 @@
+version: 1
+name: Invalid plan
+tasks:
+  - id: 0190f5f0-7f8b-7d80-a120-4f4f9fe95c21
+    source: /home/user/projects/example
+    enabled: true
+    profile_id: 0190f5f0-7f8b-7d80-a120-4f4f9fe95c20
+    steps:
+      - type: archive
+        version: 1
+        output:
+          directory: /home/user/Packages
+          filename: example
+          format: rar
+          compression: balanced
+          conflict_policy: increment
+        include_root: true
+        unreadable_policy: fail
+        verification:
+          mode: structural
+          checksum: none

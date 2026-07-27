@@ -1,0 +1,13 @@
+# @preset-id build-output
+# @preset-version 1
+# @preset-name Generic build output
+# @preset-description Common generated build and distribution directories.
+# @preset-safety safe
+
+build/
+dist/
+out/
+target/
+artifacts/
+tmp/
+temp/

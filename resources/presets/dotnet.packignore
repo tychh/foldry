@@ -1,0 +1,14 @@
+# @preset-id dotnet
+# @preset-version 1
+# @preset-name .NET
+# @preset-description NuGet and MSBuild output generated from source.
+# @preset-safety safe
+
+bin/
+obj/
+TestResults/
+artifacts/
+*.user
+*.suo
+*.nupkg
+*.snupkg

@@ -1,0 +1,43 @@
+# @preset-id nodejs
+# @preset-version 1
+# @preset-name Node.js
+# @preset-description Dependencies, framework output, caches, and runtime logs.
+# @preset-safety safe
+
+node_modules/
+bower_components/
+jspm_packages/
+
+dist/
+build/
+out/
+.vite/
+.webpack/
+.rollup.cache/
+.parcel-cache/
+.turbo/
+.next/
+.nuxt/
+.output/
+.svelte-kit/
+.angular/cache/
+.gatsby/
+storybook-static/
+
+coverage/
+.nyc_output/
+.vitest/
+.eslintcache
+.stylelintcache
+.npm/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnpm-store/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*

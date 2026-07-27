@@ -1,0 +1,16 @@
+# @preset-id cmake
+# @preset-version 1
+# @preset-name CMake
+# @preset-description CMake generators and configure/build output.
+# @preset-safety safe
+
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+Makefile
+build.ninja
+.ninja_deps
+.ninja_log

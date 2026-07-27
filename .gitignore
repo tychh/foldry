@@ -1,0 +1,26 @@
+# Rust
+/target/
+
+# Node
+/node_modules/
+/frontend/node_modules/
+/frontend/dist/
+
+# Tauri
+/crates/foldry-tauri/gen/
+
+# Editors and OS metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local runtime data
+/.foldry/
+/state/
+/tmp/
+
+# Test and coverage output
+/coverage/
+/frontend/coverage/
+/output/

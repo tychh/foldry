@@ -1,0 +1,16 @@
+# @preset-id coverage
+# @preset-version 1
+# @preset-name Coverage artifacts
+# @preset-description Reproducible language-agnostic coverage output.
+# @preset-safety safe
+
+coverage/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+lcov.info
+*.lcov
+*.gcov
+*.profraw
+*.profdata

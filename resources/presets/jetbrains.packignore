@@ -1,0 +1,11 @@
+# @preset-id jetbrains
+# @preset-version 1
+# @preset-name JetBrains IDEs
+# @preset-description Local IDE indexes, workspace state, and generated project output.
+# @preset-safety safe
+
+.idea/
+*.iml
+*.ipr
+*.iws
+out/

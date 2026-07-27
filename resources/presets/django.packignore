@@ -1,0 +1,10 @@
+# @preset-id django
+# @preset-version 1
+# @preset-name Django
+# @preset-description Django caches, collected static output, and local runtime files.
+# @preset-safety safe
+
+__pycache__/
+staticfiles/
+.django/
+*.py[cod]

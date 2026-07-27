@@ -1,0 +1,12 @@
+# @preset-id go
+# @preset-version 1
+# @preset-name Go
+# @preset-description Go workspace caches, profiles, and compiled test binaries.
+# @preset-safety safe
+
+bin/
+pkg/
+*.test
+*.out
+coverage.out
+vendor/

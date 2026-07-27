@@ -1,0 +1,12 @@
+# @preset-id database-dumps
+# @preset-version 1
+# @preset-name Database dumps
+# @preset-description Database exports and local database files. Review before excluding.
+# @preset-safety sensitive
+
+*.sql
+*.dump
+*.bak
+*.sqlite
+*.sqlite3
+*.db

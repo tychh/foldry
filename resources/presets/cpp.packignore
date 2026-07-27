@@ -1,0 +1,19 @@
+# @preset-id cpp
+# @preset-version 1
+# @preset-name C and C++
+# @preset-description Compiled objects, libraries, executables, and profiling output.
+# @preset-safety safe
+
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+*.gcda
+*.gcno
+*.profraw
+*.profdata

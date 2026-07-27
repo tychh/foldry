@@ -1,0 +1,12 @@
+# @preset-id vue
+# @preset-version 1
+# @preset-name Vue
+# @preset-description Vue dependencies, caches, test output, and distribution files.
+# @preset-safety safe
+
+node_modules/
+dist/
+.vite/
+.nuxt/
+.output/
+coverage/

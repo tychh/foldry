@@ -1,0 +1,11 @@
+# @preset-id react-vite
+# @preset-version 1
+# @preset-name React and Vite
+# @preset-description Frontend dependencies, Vite cache, coverage, and build output.
+# @preset-safety safe
+
+node_modules/
+dist/
+.vite/
+coverage/
+storybook-static/

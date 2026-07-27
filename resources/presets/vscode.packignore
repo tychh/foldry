@@ -1,0 +1,9 @@
+# @preset-id vscode
+# @preset-version 1
+# @preset-name Visual Studio Code
+# @preset-description Local editor history and workspace caches.
+# @preset-safety safe
+
+.history/
+.vscode-test/
+.vscode-server/

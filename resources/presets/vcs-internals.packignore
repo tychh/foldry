@@ -1,0 +1,11 @@
+# @preset-id vcs-internals
+# @preset-version 1
+# @preset-name Version control internals
+# @preset-description Local VCS databases and rewrite state.
+# @preset-safety safe
+
+.git/
+.git-rewrite/
+.hg/
+.svn/
+.bzr/

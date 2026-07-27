@@ -1,0 +1,12 @@
+# @preset-id windows
+# @preset-version 1
+# @preset-name Windows
+# @preset-description Explorer metadata, recycle bin, and thumbnail caches.
+# @preset-safety safe
+
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.stackdump

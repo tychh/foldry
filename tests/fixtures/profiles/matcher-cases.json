@@ -1,0 +1,64 @@
+{
+  "profiles": [
+    {
+      "name": "last match and glob syntax",
+      "case_insensitive": false,
+      "rules": [
+        "*.log",
+        "!important.log",
+        "/target/",
+        "src/**/generated/*.rs",
+        "file?.txt",
+        "image[0-9].png",
+        "\\#literal",
+        "\\!literal"
+      ],
+      "cases": [
+        { "path": "debug.log", "is_dir": false, "decision": "exclude", "rule": "*.log" },
+        { "path": "important.log", "is_dir": false, "decision": "include", "rule": "!important.log" },
+        { "path": "target/item", "is_dir": false, "decision": "exclude", "rule": "/target/" },
+        { "path": "nested/target/item", "is_dir": false, "decision": "include", "rule": null },
+        { "path": "src/a/b/generated/code.rs", "is_dir": false, "decision": "exclude", "rule": "src/**/generated/*.rs" },
+        { "path": "file1.txt", "is_dir": false, "decision": "exclude", "rule": "file?.txt" },
+        { "path": "file12.txt", "is_dir": false, "decision": "include", "rule": null },
+        { "path": "image7.png", "is_dir": false, "decision": "exclude", "rule": "image[0-9].png" },
+        { "path": "#literal", "is_dir": false, "decision": "exclude", "rule": "\\#literal" },
+        { "path": "!literal", "is_dir": false, "decision": "exclude", "rule": "\\!literal" }
+      ]
+    },
+    {
+      "name": "Git-compatible pruning",
+      "case_insensitive": false,
+      "rules": ["build/", "!build/keep.txt"],
+      "cases": [
+        { "path": "build/keep.txt", "is_dir": false, "decision": "exclude", "rule": "build/" }
+      ]
+    },
+    {
+      "name": "reincluded parent",
+      "case_insensitive": false,
+      "rules": ["build/", "!build/", "build/*.tmp", "!build/keep.tmp"],
+      "cases": [
+        { "path": "build/keep.tmp", "is_dir": false, "decision": "include", "rule": "!build/keep.tmp" },
+        { "path": "build/drop.tmp", "is_dir": false, "decision": "exclude", "rule": "build/*.tmp" }
+      ]
+    },
+    {
+      "name": "Unicode and separator normalization",
+      "case_insensitive": false,
+      "rules": ["данные/**", "日本語/*.tmp"],
+      "cases": [
+        { "path": ".\\данные\\отчёт.txt", "is_dir": false, "decision": "exclude", "rule": "данные/**" },
+        { "path": "日本語/result.tmp", "is_dir": false, "decision": "exclude", "rule": "日本語/*.tmp" }
+      ]
+    },
+    {
+      "name": "case-insensitive source filesystem",
+      "case_insensitive": true,
+      "rules": ["README.md"],
+      "cases": [
+        { "path": "readme.md", "is_dir": false, "decision": "exclude", "rule": "README.md" }
+      ]
+    }
+  ]
+}

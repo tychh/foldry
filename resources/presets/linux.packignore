@@ -1,0 +1,11 @@
+# @preset-id linux
+# @preset-version 1
+# @preset-name Linux
+# @preset-description Desktop trash, thumbnails, and editor backup files.
+# @preset-safety safe
+
+.directory
+.Trash-*
+*~
+.fuse_hidden*
+.nfs*

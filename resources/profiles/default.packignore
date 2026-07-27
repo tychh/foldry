@@ -1,0 +1,132 @@
+# @profile-id 0190f5f0-7f8b-7d80-a120-4f4f9fe95c20
+# @profile-version 1
+# @profile-name Default
+#
+# Foldry's default profile keeps source code, settings, secrets, media, data,
+# archives, and backups. It excludes only version-control internals and artifacts
+# that development tools can normally regenerate.
+
+# @preset-begin id=vcs-internals version=1
+.git/
+.git-rewrite/
+.hg/
+.svn/
+.bzr/
+# @preset-end id=vcs-internals
+
+# @preset-begin id=python version=1
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dll
+*.dylib
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+.cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+build/
+dist/
+site/
+*.whl
+*.egg
+
+venv/
+.venv/
+env/
+ENV/
+virtualenv/
+.virtualenv/
+.direnv/
+# @preset-end id=python
+
+# @preset-begin id=nodejs version=1
+node_modules/
+bower_components/
+jspm_packages/
+
+dist/
+build/
+out/
+.vite/
+.webpack/
+.rollup.cache/
+.parcel-cache/
+.turbo/
+.next/
+.nuxt/
+.output/
+.svelte-kit/
+.angular/cache/
+.gatsby/
+storybook-static/
+
+coverage/
+.nyc_output/
+.vitest/
+.eslintcache
+.stylelintcache
+.npm/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnpm-store/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+# @preset-end id=nodejs
+
+# @preset-begin id=test-artifacts version=1
+test-results/
+test-results.json
+test-report/
+test-reports/
+junit.xml
+junit-*.xml
+nosetests.xml
+.testmondata
+.coverage.*
+.pytest_cache/
+.tox/
+.nox/
+.hypothesis/
+.mutmut-cache/
+.benchmarks/
+.playwright/
+playwright-report/
+blob-report/
+cypress/videos/
+cypress/screenshots/
+.jest-cache/
+jest_html_reporters.html
+karma-coverage/
+.c8/
+.ava-cache/
+.tap/
+.mocha/
+.stryker-tmp/
+.scannerwork/
+# @preset-end id=test-artifacts
+
+# @preset-begin id=os-metadata version=1
+.DS_Store
+Thumbs.db
+# @preset-end id=os-metadata

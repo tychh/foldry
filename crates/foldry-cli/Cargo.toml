@@ -1,0 +1,26 @@
+[package]
+name = "foldry-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "foldry"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+ctrlc.workspace = true
+foldry-application = { path = "../foldry-application" }
+foldry-storage = { path = "../foldry-storage" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

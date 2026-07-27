@@ -1,0 +1,8 @@
+target/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/src/shared/contracts/generated.ts
+notes/
+Cargo.lock
+*.packignore

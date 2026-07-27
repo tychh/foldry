@@ -1,0 +1,41 @@
+.application {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 100dvh;
+  min-height: 560px;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--mantine-color-body);
+}
+
+.fullScreen,
+.loadingBody {
+  min-height: 100dvh;
+  padding: 1.5rem;
+  background: var(--mantine-color-body);
+}
+
+.errorState {
+  width: min(100%, 440px);
+}
+
+.loadingHeader {
+  display: flex;
+  flex: 0 0 72px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 1.5rem;
+  border-bottom: 1px solid var(--mantine-color-default-border);
+}
+
+.loadingBody {
+  min-height: 0;
+  flex: 1;
+}
+
+@media (max-height: 560px) {
+  .application {
+    overflow: auto;
+  }
+}

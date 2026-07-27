@@ -1,0 +1,16 @@
+# @preset-id java
+# @preset-version 1
+# @preset-name Java, Gradle, and Maven
+# @preset-description Reproducible JVM build output and local Gradle state.
+# @preset-safety safe
+
+.gradle/
+build/
+target/
+out/
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+replay_pid*

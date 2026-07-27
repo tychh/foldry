@@ -1,0 +1,24 @@
+version: 1
+locale: en
+appearance: system
+default_profile_id: 0190f5f0-7f8b-7d80-a120-4f4f9fe95c20
+archive_defaults:
+  output_directory: /home/user/Packages
+  format: zip
+  compression: balanced
+  conflict_policy: increment
+  include_root: true
+  unreadable_policy: fail
+  verification_mode: structural
+  checksum: none
+execution:
+  max_parallel_runs: 2
+history:
+  runs:
+    unlimited: false
+    max_age_days: 365
+    max_entries: 10000
+  logs:
+    unlimited: false
+    max_age_days: 90
+    max_entries: 1000

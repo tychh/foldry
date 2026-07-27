@@ -1,0 +1,8 @@
+# @preset-id os-metadata
+# @preset-version 1
+# @preset-name OS metadata
+# @preset-description Finder and Explorer metadata files.
+# @preset-safety safe
+
+.DS_Store
+Thumbs.db

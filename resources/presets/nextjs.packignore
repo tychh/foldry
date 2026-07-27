@@ -1,0 +1,11 @@
+# @preset-id nextjs
+# @preset-version 1
+# @preset-name Next.js
+# @preset-description Next.js build, export, cache, and telemetry state.
+# @preset-safety safe
+
+node_modules/
+.next/
+out/
+.vercel/cache/
+next-env.d.ts

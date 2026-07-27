@@ -1,0 +1,12 @@
+# @preset-id certificates-keys
+# @preset-version 1
+# @preset-name Certificates and keys
+# @preset-description Private keys, certificates, and keystores. Review before excluding.
+# @preset-safety sensitive
+
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore

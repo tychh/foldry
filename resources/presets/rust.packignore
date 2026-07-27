@@ -1,0 +1,9 @@
+# @preset-id rust
+# @preset-version 1
+# @preset-name Rust
+# @preset-description Cargo build output and local tool caches.
+# @preset-safety safe
+
+target/
+.cargo/.package-cache
+Cargo.lock.msrv

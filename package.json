@@ -1,0 +1,30 @@
+{
+  "name": "foldry-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.17.0",
+  "engines": {
+    "node": ">=24.18.0 <25",
+    "pnpm": "11.17.0"
+  },
+  "scripts": {
+    "dev": "pnpm --dir frontend dev",
+    "desktop:dev": "tauri dev --config crates/foldry-tauri/tauri.conf.json",
+    "desktop:build": "tauri build --config crates/foldry-tauri/tauri.conf.json",
+    "format": "prettier --write \"frontend/**/*.{ts,tsx,css,html,json}\" \"scripts/**/*.mjs\" \"docs/**/*.md\" README.md CONTRIBUTING.md package.json pnpm-workspace.yaml \".github/**/*.{yml,yaml}\" && cargo fmt --all",
+    "format:check": "prettier --check \"frontend/**/*.{ts,tsx,css,html,json}\" \"scripts/**/*.mjs\" \"docs/**/*.md\" README.md CONTRIBUTING.md package.json pnpm-workspace.yaml \".github/**/*.{yml,yaml}\" && cargo fmt --all --check",
+    "lint": "pnpm --dir frontend lint && cargo clippy --workspace --all-targets --all-features -- -D warnings",
+    "contracts:generate": "cargo run -p foldry-application --example export_contracts",
+    "contracts:check": "cargo run -p foldry-application --example export_contracts -- --check",
+    "typecheck": "pnpm contracts:check && pnpm --dir frontend typecheck",
+    "test": "pnpm --dir frontend test:run && cargo test --workspace --all-targets --exclude foldry-tauri",
+    "build": "pnpm --dir frontend build && cargo build --workspace",
+    "release:check": "node scripts/check-release-metadata.mjs",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm release:check && pnpm test && pnpm build",
+    "release:build": "pnpm check && pnpm desktop:build && cargo build --release -p foldry-cli --bin foldry"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "prettier": "3.9.6"
+  }
+}

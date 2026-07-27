@@ -1,0 +1,43 @@
+# @preset-id python
+# @preset-version 1
+# @preset-name Python
+# @preset-description Bytecode, environments, caches, and build artifacts.
+# @preset-safety safe
+
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dll
+*.dylib
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+.cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+build/
+dist/
+site/
+*.whl
+*.egg
+
+venv/
+.venv/
+env/
+ENV/
+virtualenv/
+.virtualenv/
+.direnv/

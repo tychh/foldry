@@ -1,0 +1,238 @@
+.workspace {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: 250px minmax(460px, 1fr) 320px;
+  background: var(--mantine-color-body);
+}
+
+.profileRail,
+.editorPanel,
+.presetRail {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.5rem;
+}
+
+.profileRail {
+  border-right: 1px solid var(--mantine-color-default-border);
+}
+
+.presetRail {
+  border-left: 1px solid var(--mantine-color-default-border);
+}
+
+.profileList,
+.presetList {
+  min-height: 0;
+  flex: 1;
+}
+
+.profileRow {
+  display: grid;
+  width: 100%;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.65rem 0.75rem;
+  color: var(--mantine-color-text);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--mantine-radius-sm);
+}
+
+.profileRow span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profileRow:hover,
+.profileRow:focus-visible {
+  background: var(--mantine-color-default-hover);
+}
+
+.profileRow[data-active] {
+  color: var(--mantine-primary-color-filled);
+  background: var(--mantine-primary-color-light);
+}
+
+.validity {
+  width: 0.5rem;
+  height: 0.5rem;
+  background: var(--mantine-color-red-6);
+  border: 2px solid var(--mantine-color-body);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--mantine-color-red-6);
+}
+
+.validity[data-valid] {
+  background: var(--mantine-color-green-6);
+  box-shadow: 0 0 0 1px var(--mantine-color-green-6);
+}
+
+.editorPanel {
+  gap: 0.75rem;
+}
+
+.editorHeader {
+  min-height: 3.5rem;
+}
+
+.editorSurface {
+  min-height: 18rem;
+  flex: 1;
+  padding: 0;
+  overflow: hidden;
+  background: light-dark(
+    var(--mantine-color-gray-0),
+    var(--mantine-color-dark-8)
+  );
+}
+
+.editorSurface :global(.cm-editor) {
+  height: 100%;
+  color: var(--mantine-color-text);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 0.82rem;
+  background: transparent;
+}
+
+.editorSurface :global(.cm-scroller) {
+  line-height: 1.65;
+}
+
+.editorSurface :global(.cm-focused) {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: -2px;
+}
+
+.editorSurface :global(.foldry-comment) {
+  color: var(--mantine-color-dimmed);
+}
+
+.editorSurface :global(.foldry-metadata) {
+  color: light-dark(
+    var(--mantine-color-violet-8),
+    var(--mantine-color-violet-3)
+  );
+}
+
+.editorSurface :global(.foldry-preset-marker) {
+  color: light-dark(var(--mantine-color-blue-8), var(--mantine-color-blue-3));
+  background: var(--mantine-primary-color-light);
+}
+
+.editorSurface :global(.foldry-negation) {
+  color: light-dark(var(--mantine-color-green-8), var(--mantine-color-green-3));
+}
+
+.rulesHelp {
+  line-height: 1.45;
+}
+
+.diagnostics {
+  flex: 0 0 auto;
+  padding: 0.75rem 0.9rem;
+}
+
+.emptyEditor {
+  display: grid;
+  min-height: 18rem;
+  flex: 1;
+  place-items: center;
+  align-content: center;
+  gap: 0.75rem;
+}
+
+.inlineConfirmation {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem;
+  border-color: var(--mantine-color-red-4);
+}
+
+.preset {
+  border-color: var(--mantine-color-default-border);
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+
+.preset[data-state="installed"] {
+  border-color: var(--mantine-color-green-4);
+}
+
+.preset[data-state="modified"] {
+  border-color: var(--mantine-color-orange-4);
+}
+
+.preset[data-state="outdated"] {
+  border-color: var(--mantine-color-blue-4);
+}
+
+.presetConfirmation {
+  padding: 0.65rem;
+  background: light-dark(
+    var(--mantine-color-orange-0),
+    color-mix(in srgb, var(--mantine-color-orange-9) 20%, transparent)
+  );
+  border-radius: var(--mantine-radius-sm);
+}
+
+.diffRemoved,
+.diffAdded {
+  max-height: 13rem;
+  padding: 0.75rem;
+  overflow: auto;
+  white-space: pre;
+}
+
+.diffRemoved {
+  background: light-dark(
+    var(--mantine-color-red-0),
+    color-mix(in srgb, var(--mantine-color-red-9) 20%, transparent)
+  );
+}
+
+.diffAdded {
+  background: light-dark(
+    var(--mantine-color-green-0),
+    color-mix(in srgb, var(--mantine-color-green-9) 20%, transparent)
+  );
+}
+
+@media (max-width: 74.99em) {
+  .workspace {
+    grid-template-columns: 210px minmax(0, 1fr);
+  }
+
+  .presetRail {
+    display: none;
+  }
+}
+
+@media (max-width: 47.99em) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .profileRail {
+    display: none;
+  }
+
+  .editorPanel {
+    padding: 1rem;
+  }
+
+  .editorHeader {
+    align-items: flex-start;
+  }
+}

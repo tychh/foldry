@@ -1,0 +1,13 @@
+# @preset-id macos
+# @preset-version 1
+# @preset-name macOS
+# @preset-description Finder metadata, resource forks, and Spotlight/Trash state.
+# @preset-safety safe
+
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes

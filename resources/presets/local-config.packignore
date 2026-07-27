@@ -1,0 +1,10 @@
+# @preset-id local-config
+# @preset-version 1
+# @preset-name Local configuration
+# @preset-description Machine- or user-specific configuration. Review before excluding.
+# @preset-safety sensitive
+
+*.local
+*.local.*
+config/local.*
+settings.local.*

@@ -1,0 +1,12 @@
+# @preset-id private-media
+# @preset-version 1
+# @preset-name Private media
+# @preset-description Personal images, audio, and video. Review before excluding.
+# @preset-safety sensitive
+
+private/
+personal/
+*.heic
+*.mov
+*.mp4
+*.m4a

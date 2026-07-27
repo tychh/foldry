@@ -1,0 +1,35 @@
+# @preset-id test-artifacts
+# @preset-version 1
+# @preset-name Test artifacts
+# @preset-description Reports, coverage output, recordings, and runner caches.
+# @preset-safety safe
+
+test-results/
+test-results.json
+test-report/
+test-reports/
+junit.xml
+junit-*.xml
+nosetests.xml
+.testmondata
+.coverage.*
+.pytest_cache/
+.tox/
+.nox/
+.hypothesis/
+.mutmut-cache/
+.benchmarks/
+.playwright/
+playwright-report/
+blob-report/
+cypress/videos/
+cypress/screenshots/
+.jest-cache/
+jest_html_reporters.html
+karma-coverage/
+.c8/
+.ava-cache/
+.tap/
+.mocha/
+.stryker-tmp/
+.scannerwork/

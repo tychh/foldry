@@ -1,0 +1,21 @@
+version: 1
+name: Active plan
+tasks:
+- id: 0190f5f0-7f8b-7d80-a120-4f4f9fe95c21
+  source: /home/user/projects/example
+  enabled: true
+  profile_id: 0190f5f0-7f8b-7d80-a120-4f4f9fe95c20
+  steps:
+  - type: archive
+    include_root: true
+    output:
+      compression: balanced
+      conflict_policy: increment
+      directory: /home/user/Packages
+      filename: example-{date}
+      format: zip
+    unreadable_policy: fail
+    verification:
+      checksum: none
+      mode: structural
+    version: 1
