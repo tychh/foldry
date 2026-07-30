@@ -1,0 +1,140 @@
+.previewSummary {
+  background: light-dark(
+    var(--mantine-color-gray-0),
+    var(--mantine-color-dark-7)
+  );
+}
+
+.previewSizeGrid,
+.snapshotGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.snapshotGrid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 0;
+}
+
+.search {
+  min-width: min(100%, 260px);
+  flex: 1;
+}
+
+.virtualViewport {
+  height: 420px;
+  overflow: auto;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+  overscroll-behavior: contain;
+}
+
+.virtualViewport:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 2px;
+}
+
+.virtualCanvas {
+  position: relative;
+  min-width: 560px;
+}
+
+.previewRow {
+  position: absolute;
+  inset: 0 0 auto;
+  display: grid;
+  height: 58px;
+  grid-template-columns: 86px minmax(0, 1fr) 72px;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--mantine-color-default-border);
+}
+
+.previewRow[data-disposition="skipped"] {
+  background: light-dark(
+    var(--mantine-color-yellow-0),
+    color-mix(in srgb, var(--mantine-color-yellow-9) 12%, transparent)
+  );
+}
+
+.entryPath,
+.outputPath {
+  overflow: hidden;
+  font-family: var(--mantine-font-family-monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.historyRow {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(150px, auto) minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.8rem;
+  color: var(--mantine-color-text);
+  text-align: left;
+  background: transparent;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+}
+
+.historyRow:hover,
+.historyRow:focus-visible,
+.historyRow[aria-pressed="true"] {
+  background: var(--mantine-color-default-hover);
+  border-color: var(--mantine-primary-color-filled);
+}
+
+.resultGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.logs {
+  height: 300px;
+  overflow: auto;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+}
+
+.logs:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 2px;
+}
+
+.logCanvas {
+  position: relative;
+}
+
+.logRow {
+  position: absolute;
+  inset: 0 0 auto;
+  display: grid;
+  height: 58px;
+  grid-template-columns: 44px 52px minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: start;
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid var(--mantine-color-default-border);
+}
+
+@media (max-width: 40em) {
+  .previewSizeGrid,
+  .snapshotGrid,
+  .resultGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .historyRow {
+    grid-template-columns: 1fr auto;
+  }
+
+  .historyRow > :nth-child(2) {
+    grid-row: 2;
+  }
+}

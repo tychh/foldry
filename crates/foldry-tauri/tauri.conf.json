@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Foldry",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "identifier": "app.foldry.desktop",
   "build": {
     "beforeDevCommand": "corepack pnpm --dir frontend dev",
@@ -16,8 +16,8 @@
         "title": "Foldry",
         "width": 1280,
         "height": 800,
-        "minWidth": 760,
-        "minHeight": 560,
+        "minWidth": 1024,
+        "minHeight": 700,
         "center": true
       }
     ],
@@ -30,11 +30,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "publisher": "Foldry contributors",
-    "copyright": "Copyright © 2026 Foldry contributors",
+    "publisher": "tychh",
+    "copyright": "Copyright © 2026 tychh",
     "category": "Utility",
-    "shortDescription": "Safe, explainable folder archives",
-    "longDescription": "Foldry creates verified ZIP, TAR.GZ, and TAR.ZST archives from folders using reusable, explainable filtering profiles.",
+    "shortDescription": "Safe, explainable actions for your folders",
+    "longDescription": "Foldry remembers folders, applies reusable Ignore Profiles, and runs verified ZIP, TAR.GZ, and TAR.ZST Archive actions.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

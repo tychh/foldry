@@ -5,8 +5,9 @@ use std::{
 
 use atomicwrites::{AllowOverwrite, AtomicFile};
 use foldry_application::{
-    ActivePlanRepository, Plan, PresetId, PresetRepository, ProfileId, ProfileRepository,
-    RepositoryError, Settings, SettingsRepository, StoredPreset, StoredProfile, parse_profile,
+    ActivePlanRepository, DEFAULT_PROFILE_FILENAME, Plan, PresetId, PresetRepository, ProfileId,
+    ProfileRepository, RepositoryError, Settings, SettingsRepository, StoredPreset, StoredProfile,
+    parse_profile,
 };
 
 use crate::{decode_plan, decode_settings, encode_plan, encode_settings};
@@ -122,13 +123,19 @@ impl ProfileRepository for FileProfileRepository {
         let Some(profile) = self.get(id)? else {
             return Ok(false);
         };
+        if profile.path.file_name().and_then(|name| name.to_str()) == Some(DEFAULT_PROFILE_FILENAME)
+        {
+            return Err(RepositoryError::new(
+                "the default profile cannot be deleted",
+            ));
+        }
         fs::remove_file(profile.path).map_err(repository_error)?;
         Ok(true)
     }
 
     fn restore_default(&self) -> Result<StoredProfile, RepositoryError> {
         let text = fs::read_to_string(&self.default_resource).map_err(repository_error)?;
-        self.save_text("default.packignore", &text)
+        self.save_text(DEFAULT_PROFILE_FILENAME, &text)
     }
 }
 
@@ -245,7 +252,7 @@ pub fn initialize_resource_copies(
     let presets = config_directory.join("presets");
     fs::create_dir_all(&profiles).map_err(repository_error)?;
     fs::create_dir_all(&presets).map_err(repository_error)?;
-    let default_target = profiles.join("default.packignore");
+    let default_target = profiles.join(DEFAULT_PROFILE_FILENAME);
     if !default_target.exists() {
         let contents = fs::read(resource_root.join("profiles/default.packignore"))
             .map_err(repository_error)?;

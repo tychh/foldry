@@ -186,15 +186,22 @@ fn migration_is_transactional_and_future_schemas_are_rejected() {
 
 fn sample_run(started_at: &str, state: RunState) -> RunRecord {
     let plan = fixture_plan();
-    let task = plan.tasks[0].clone();
+    let mut folder = plan.folders[0].clone();
+    let action = folder.actions.remove(0);
     RunRecord {
         run_id: foldry_application::RunId::new(),
-        task_id: task.id,
+        folder_id: folder.id,
+        action_id: action.id,
         state,
         started_at: timestamp(started_at),
         finished_at: None,
         snapshot: RunSnapshot {
-            task,
+            folder: foldry_application::FolderSnapshot {
+                id: folder.id,
+                source: folder.source,
+            },
+            action,
+            effective_profile_id: folder.default_profile_id,
             settings: Settings::default(),
             profile_text: "# profile snapshot".into(),
             profile_hash: "sha256:test".into(),
@@ -236,7 +243,7 @@ fn failed_summary() -> ResultSummary {
 fn fixture_plan() -> foldry_application::Plan {
     let source = fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/formats/v1/plan.packplan.yaml"),
+            .join("../../tests/fixtures/formats/v2/plan.packplan.yaml"),
     )
     .unwrap();
     decode_plan(&source).unwrap()

@@ -41,6 +41,15 @@ pub enum Appearance {
     Dark,
 }
 
+/// Preferred presentation of folder browser contents.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserView {
+    #[default]
+    Tree,
+    List,
+}
+
 /// Defaults copied into a newly created archive action.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ArchiveDefaults {
@@ -83,6 +92,19 @@ pub struct HistorySettings {
     pub extensions: Extensions,
 }
 
+/// User-managed shortcuts and bounded navigation history for the folder browser.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct BrowserSettings {
+    #[serde(default)]
+    pub favorites: Vec<PathBuf>,
+    #[serde(default)]
+    pub recent: Vec<PathBuf>,
+    #[serde(default)]
+    pub view: BrowserView,
+    #[serde(default, skip_serializing_if = "Extensions::is_empty", flatten)]
+    pub extensions: Extensions,
+}
+
 /// Versioned application settings document.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Settings {
@@ -94,6 +116,8 @@ pub struct Settings {
     pub archive_defaults: ArchiveDefaults,
     pub execution: ExecutionSettings,
     pub history: HistorySettings,
+    #[serde(default)]
+    pub browser: BrowserSettings,
     #[serde(default, skip_serializing_if = "Extensions::is_empty", flatten)]
     pub extensions: Extensions,
 }
@@ -135,6 +159,7 @@ impl Default for Settings {
                 },
                 extensions: Extensions::new(),
             },
+            browser: BrowserSettings::default(),
             extensions: Extensions::new(),
         }
     }

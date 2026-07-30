@@ -9,11 +9,12 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.97"
-authors = ["Foldry contributors"]
+authors = ["tychh"]
 description = "Safe, explainable folder archiving with reusable filtering profiles"
+license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
@@ -23,7 +24,7 @@ ctrlc = "3.5.2"
 directories = "6.0.0"
 flate2 = "1.1.9"
 ignore = "0.4.31"
-jiff = { version = "0.2.35", default-features = false, features = ["serde", "std"] }
+jiff = { version = "0.2.35", default-features = false, features = ["serde", "std", "tz-system"] }
 libc = "0.2"
 proptest = "1.11.0"
 rusqlite = { version = "0.40.1", features = ["bundled"] }

@@ -53,23 +53,18 @@ impl ArchiveRunExecutor {
         started: Instant,
     ) -> Result<ResultSummary, FoldryError> {
         reporter.log(LogLevel::Info, "planning archive".into(), None);
-        let action = match run.snapshot.task.steps.as_slice() {
-            [ActionSpec::Archive(action)] => action.clone(),
-            [ActionSpec::Unsupported(action)] => {
+        let mut action = match &run.snapshot.action.spec {
+            ActionSpec::Archive(action) => action.clone(),
+            ActionSpec::Unsupported(action) => {
                 return Err(foldry_error(
                     ErrorCode::UnsupportedAction,
                     format!("action type `{}` is unsupported", action.action_type),
                     None,
                 ));
             }
-            _ => {
-                return Err(foldry_error(
-                    ErrorCode::InvalidConfiguration,
-                    "task requires exactly one archive action".into(),
-                    None,
-                ));
-            }
         };
+        action.output.filename =
+            resolve_filename_template(&action.output.filename, &run.snapshot.folder.source)?;
         let parsed = parse_profile(&run.snapshot.profile_text);
         let profile = parsed.profile.ok_or_else(|| {
             foldry_error(
@@ -83,18 +78,18 @@ impl ArchiveRunExecutor {
                 None,
             )
         })?;
-        if profile.id != run.snapshot.task.profile_id {
+        if profile.id != run.snapshot.effective_profile_id {
             return Err(foldry_error(
                 ErrorCode::InvalidProfile,
-                "snapshot profile ID does not match the task profile ID".into(),
+                "snapshot profile ID does not match the effective action profile ID".into(),
                 None,
             ));
         }
-        let case = detect_case_sensitivity(&run.snapshot.task.source).map_err(|error| {
+        let case = detect_case_sensitivity(&run.snapshot.folder.source).map_err(|error| {
             foldry_error(
                 ErrorCode::SourceUnavailable,
                 error.to_string(),
-                Some(run.snapshot.task.source.to_string_lossy().into_owned()),
+                Some(run.snapshot.folder.source.to_string_lossy().into_owned()),
             )
         })?;
         let matcher = CompiledProfile::new(&profile, case.value)
@@ -102,14 +97,18 @@ impl ArchiveRunExecutor {
         if !control.checkpoint() {
             return Err(cancelled_error());
         }
-        let reservation = reserve_output(&run.snapshot.task.source, &action.output, run.run_id)
+        let reservation = reserve_output(&run.snapshot.folder.source, &action.output, run.run_id)
             .map_err(|error| {
-                foldry_error(
-                    ErrorCode::OutputUnavailable,
-                    error.to_string(),
-                    Some(action.output.directory.to_string_lossy().into_owned()),
-                )
-            })?;
+            foldry_error(
+                ErrorCode::OutputUnavailable,
+                error.to_string(),
+                action
+                    .output
+                    .directory
+                    .resolve(&run.snapshot.folder.source)
+                    .map(|path| path.to_string_lossy().into_owned()),
+            )
+        })?;
         let PlanOutput::Reserved(reservation) = reservation else {
             let PlanOutput::Skipped { path } = reservation else {
                 unreachable!()
@@ -135,6 +134,11 @@ impl ArchiveRunExecutor {
                 error: None,
             });
         };
+        reporter.log(
+            LogLevel::Info,
+            "archive output planned".into(),
+            Some(reservation.final_path().to_string_lossy().into_owned()),
+        );
         let manifest_id = run.run_id.to_string();
         let writer =
             ManifestWriter::create(&self.manifest_directory, &manifest_id).map_err(|error| {
@@ -154,7 +158,7 @@ impl ArchiveRunExecutor {
             current_path: None,
         });
         let totals = FileSystemScanner::scan(
-            &run.snapshot.task.source,
+            &run.snapshot.folder.source,
             &matcher,
             &mut sink,
             &Default::default(),
@@ -166,7 +170,7 @@ impl ArchiveRunExecutor {
                 foldry_error(
                     ErrorCode::ReadFailed,
                     error.to_string(),
-                    Some(run.snapshot.task.source.to_string_lossy().into_owned()),
+                    Some(run.snapshot.folder.source.to_string_lossy().into_owned()),
                 )
             }
         })?;
@@ -185,7 +189,7 @@ impl ArchiveRunExecutor {
             }
         };
         let plan = ExecutionPlan {
-            source_root: run.snapshot.task.source.clone(),
+            source_root: run.snapshot.folder.source.clone(),
             action,
             totals: totals.clone(),
         };
@@ -202,7 +206,7 @@ impl ArchiveRunExecutor {
         drop(entries);
         let cleanup = handle.remove();
         let execution =
-            execution.map_err(|error| execution_error(error, &run.snapshot.task.source))?;
+            execution.map_err(|error| execution_error(error, &run.snapshot.folder.source))?;
         cleanup.map_err(|error| foldry_error(ErrorCode::WriteFailed, error.to_string(), None))?;
         let warnings = execution
             .warnings
@@ -310,6 +314,26 @@ fn execution_error(error: ExecutionError, source: &std::path::Path) -> FoldryErr
         error.to_string(),
         Some(source.to_string_lossy().into_owned()),
     )
+}
+
+fn resolve_filename_template(
+    template: &str,
+    source: &std::path::Path,
+) -> Result<String, FoldryError> {
+    let folder = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            foldry_error(
+                ErrorCode::InvalidConfiguration,
+                format!("source {} has no usable folder name", source.display()),
+                Some(source.to_string_lossy().into_owned()),
+            )
+        })?;
+    let date = jiff::Zoned::now().date().to_string();
+    Ok(template
+        .replace("{folder}", folder)
+        .replace("{date}", &date))
 }
 
 fn foldry_error(code: ErrorCode, message: String, path: Option<String>) -> FoldryError {

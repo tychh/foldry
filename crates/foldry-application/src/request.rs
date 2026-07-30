@@ -47,6 +47,20 @@ where
         })
     }
 
+    pub fn cancel_where(&mut self, mut predicate: impl FnMut(&K) -> bool) -> u64 {
+        let mut cancelled = 0_u64;
+        self.active.retain(|key, request| {
+            if predicate(key) {
+                request.cancellation.cancel();
+                cancelled = cancelled.saturating_add(1);
+                false
+            } else {
+                true
+            }
+        });
+        cancelled
+    }
+
     #[must_use]
     pub fn is_current(&self, key: &K, generation: u64) -> bool {
         self.active
@@ -80,5 +94,21 @@ mod tests {
         assert!(registry.is_current(&"directory", second.generation));
         assert!(!registry.finish(&"directory", first.generation));
         assert!(registry.finish(&"directory", second.generation));
+    }
+
+    #[test]
+    fn matching_requests_can_be_cancelled_as_a_group() {
+        let mut registry = LatestRequestRegistry::default();
+        let first = registry.begin(("folder-a", "action-a"));
+        let second = registry.begin(("folder-a", "action-b"));
+        let other = registry.begin(("folder-b", "action-a"));
+
+        assert_eq!(
+            registry.cancel_where(|(folder, _)| *folder == "folder-a"),
+            2
+        );
+        assert!(first.cancellation.is_cancelled());
+        assert!(second.cancellation.is_cancelled());
+        assert!(!other.cancellation.is_cancelled());
     }
 }

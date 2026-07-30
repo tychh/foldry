@@ -73,13 +73,32 @@ pub enum ChecksumAlgorithm {
 /// Output naming and archive codec settings.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ArchiveOutputSpec {
-    pub directory: PathBuf,
+    pub directory: ArchiveOutputDirectory,
     pub filename: String,
     pub format: ArchiveFormat,
     pub compression: CompressionLevel,
     pub conflict_policy: ConflictPolicy,
     #[serde(default, skip_serializing_if = "Extensions::is_empty", flatten)]
     pub extensions: Extensions,
+}
+
+/// Source-relative or explicit archive destination.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ArchiveOutputDirectory {
+    Parent,
+    Custom { path: PathBuf },
+}
+
+impl ArchiveOutputDirectory {
+    /// Resolves the configured destination against the current source location.
+    #[must_use]
+    pub fn resolve(&self, source: &std::path::Path) -> Option<PathBuf> {
+        match self {
+            Self::Parent => source.parent().map(std::path::Path::to_path_buf),
+            Self::Custom { path } => Some(path.clone()),
+        }
+    }
 }
 
 /// Verification settings applied after the archive writer closes.
@@ -118,7 +137,7 @@ mod tests {
         let json = r#"{
           "version": 1,
           "output": {
-            "directory": ".",
+            "directory": { "mode": "parent" },
             "filename": "backup",
             "format": "zip",
             "compression": "balanced",

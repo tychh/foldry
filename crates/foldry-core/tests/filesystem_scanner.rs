@@ -3,7 +3,7 @@ use std::{fs, path::Path};
 use foldry_core::{
     CancellationToken, CompiledProfile, FileSystemBrowser, FileSystemCaseSensitivity,
     FileSystemObjectKind, FileSystemScanner, ScanDisposition, ScanNotice, ScanSink, ScanSinkError,
-    ScannedEntry, detect_case_sensitivity, parse_profile,
+    ScannedEntry, parse_profile,
 };
 
 #[derive(Default)]
@@ -118,6 +118,7 @@ fn browser_is_lazy_sorted_stable_and_cancellable() {
     let directory = tempfile::tempdir().expect("temp directory");
     fs::create_dir(directory.path().join("Zulu")).expect("zulu");
     fs::create_dir(directory.path().join("alpha")).expect("alpha");
+    fs::write(directory.path().join("aardvark.txt"), "file").expect("file");
     fs::write(directory.path().join("Zulu/hidden-child"), "not loaded").expect("nested");
     let cancellation = CancellationToken::default();
 
@@ -131,7 +132,7 @@ fn browser_is_lazy_sorted_stable_and_cancellable() {
             .iter()
             .map(|node| node.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["alpha", "Zulu"]
+        vec!["alpha", "Zulu", "aardvark.txt"]
     );
     assert_eq!(
         first.iter().map(|node| &node.id).collect::<Vec<_>>(),
@@ -141,6 +142,81 @@ fn browser_is_lazy_sorted_stable_and_cancellable() {
 
     cancellation.cancel();
     assert!(FileSystemBrowser::direct_children(directory.path(), &cancellation).is_err());
+}
+
+#[test]
+fn browser_locations_include_existing_home_shortcuts() {
+    let home = tempfile::tempdir().expect("home");
+    fs::create_dir(home.path().join("Documents")).expect("documents");
+    fs::create_dir(home.path().join("Downloads")).expect("downloads");
+
+    let roots = FileSystemBrowser::roots(Some(home.path()));
+
+    assert_eq!(roots[0].name, "Home");
+    assert_eq!(roots[1].name, "Documents");
+    assert_eq!(roots[2].name, "Downloads");
+    #[cfg(unix)]
+    assert!(roots.iter().any(|root| root.path == Path::new("/")));
+    #[cfg(windows)]
+    assert!(
+        roots
+            .iter()
+            .any(|root| root.kind == foldry_core::BrowserRootKind::Drive)
+    );
+}
+
+#[test]
+fn browser_size_counts_regular_file_logical_bytes_and_can_be_cancelled() {
+    let directory = tempfile::tempdir().expect("directory");
+    fs::create_dir(directory.path().join("nested")).expect("nested");
+    fs::write(directory.path().join("one.bin"), [0_u8; 7]).expect("first file");
+    fs::write(directory.path().join("nested/two.bin"), [0_u8; 11]).expect("second file");
+
+    let result = FileSystemBrowser::directory_size(directory.path(), &CancellationToken::default())
+        .expect("size");
+    assert_eq!(result.logical_bytes, 18);
+    assert!(!result.partial);
+
+    let cancelled = CancellationToken::default();
+    cancelled.cancel();
+    assert!(FileSystemBrowser::directory_size(directory.path(), &cancelled).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn browser_size_does_not_follow_symlink_loops() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempfile::tempdir().expect("directory");
+    fs::write(directory.path().join("data.bin"), [0_u8; 13]).expect("file");
+    symlink(directory.path(), directory.path().join("loop")).expect("loop");
+
+    let result = FileSystemBrowser::directory_size(directory.path(), &CancellationToken::default())
+        .expect("size");
+
+    assert_eq!(result.logical_bytes, 13);
+    assert!(!result.partial);
+}
+
+#[cfg(unix)]
+#[test]
+fn browser_size_marks_unreadable_subtrees_as_partial() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().expect("directory");
+    let unreadable = directory.path().join("unreadable");
+    fs::create_dir(&unreadable).expect("unreadable directory");
+    fs::write(unreadable.join("secret.bin"), [0_u8; 17]).expect("file");
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000))
+        .expect("remove permissions");
+
+    let result = FileSystemBrowser::directory_size(directory.path(), &CancellationToken::default())
+        .expect("size");
+
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o700))
+        .expect("restore permissions");
+    assert!(result.partial);
+    assert_eq!(result.warnings, 1);
 }
 
 #[test]
@@ -161,6 +237,8 @@ fn cancelled_scan_writes_nothing() {
 #[cfg(target_os = "linux")]
 #[test]
 fn source_filesystem_case_behavior_is_probed() {
+    use foldry_core::detect_case_sensitivity;
+
     let directory = tempfile::Builder::new()
         .prefix("foldry-case-probe-")
         .tempdir()

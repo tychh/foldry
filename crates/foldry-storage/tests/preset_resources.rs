@@ -70,6 +70,27 @@ fn default_profile_never_auto_installs_sensitive_presets() {
     }
 }
 
+#[test]
+fn default_profile_contains_only_operating_system_junk_rules() {
+    let default_profile = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../resources/profiles/default.packignore"),
+    )
+    .unwrap();
+
+    assert_eq!(default_profile.matches("# @preset-begin").count(), 1);
+    assert!(default_profile.contains("# @preset-begin id=os-metadata version=2"));
+    for os_junk in [".DS_Store", "Thumbs.db", "Desktop.ini", ".Trash-*/"] {
+        assert!(default_profile.contains(os_junk), "{os_junk}");
+    }
+    for development_artifact in [".git/", "node_modules/", "target/", "__pycache__/"] {
+        assert!(
+            !default_profile.contains(development_artifact),
+            "{development_artifact}"
+        );
+    }
+}
+
 fn resource_directory() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../resources/presets")
 }

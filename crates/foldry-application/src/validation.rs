@@ -7,11 +7,12 @@ pub enum ValidationCode {
     UnsupportedDocumentVersion,
     EmptyName,
     EmptySource,
-    DuplicateTaskId,
+    DuplicateFolderId,
+    DuplicateActionId,
     DuplicateSource,
-    InvalidStepCount,
     EmptyOutputDirectory,
-    EmptyOutputFilename,
+    InvalidOutputFilename,
+    OutputInsideSource,
     ReservedExtensionField,
     InvalidParallelRuns,
     InvalidRetention,
@@ -25,7 +26,7 @@ pub struct ValidationIssue {
     pub message: String,
 }
 
-/// Stable reason why a structurally valid task cannot be executed by this build.
+/// Stable reason why a structurally valid action cannot be executed by this build.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionBlockerCode {

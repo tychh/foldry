@@ -1,13 +1,15 @@
 use std::{fs, path::PathBuf};
 
-use foldry_application::{ActionSpec, ContractValidation, ExecutionBlockerCode, ValidationCode};
+use foldry_application::{
+    ActionSpec, BrowserView, ContractValidation, ExecutionBlockerCode, ValidationCode,
+};
 use foldry_storage::{DocumentError, decode_plan, decode_settings, encode_plan, encode_settings};
 use proptest::prelude::*;
 use serde_json::Value;
 
 #[test]
-fn v1_plan_has_a_stable_golden_round_trip() {
-    let source = fixture("formats/v1/plan.packplan.yaml");
+fn v2_plan_has_a_stable_golden_round_trip() {
+    let source = fixture("formats/v2/plan.packplan.yaml");
     let plan = decode_plan(&source).unwrap();
     let encoded = encode_plan(&plan).unwrap();
 
@@ -26,19 +28,34 @@ fn v1_settings_have_a_stable_golden_round_trip() {
 }
 
 #[test]
+fn settings_without_a_browser_view_default_to_tree() {
+    let source = fixture("formats/v1/settings.yaml").replace("  view: tree\n", "");
+    let settings = decode_settings(&source).unwrap();
+
+    assert_eq!(settings.browser.view, BrowserView::Tree);
+}
+
+#[test]
 fn compatible_unknown_fields_survive_a_semantic_round_trip() {
-    let source = fixture("formats/v1/plan-unknown-fields.packplan.yaml");
+    let source = fixture("formats/v2/plan-unknown-fields.packplan.yaml");
     let plan = decode_plan(&source).unwrap();
     let encoded = encode_plan(&plan).unwrap();
     let value: Value = serde_yaml_ng::from_str(&encoded).unwrap();
 
     assert_eq!(value["x_vendor"]["color"], "blue");
-    assert_eq!(value["tasks"][0]["x_task_label"], "important");
+    assert_eq!(value["folders"][0]["x_folder_label"], "important");
     assert_eq!(
-        value["tasks"][0]["steps"][0]["output"]["x_storage_class"],
+        value["folders"][0]["actions"][0]["x_action_label"],
+        "generated"
+    );
+    assert_eq!(
+        value["folders"][0]["actions"][0]["spec"]["output"]["x_storage_class"],
         "local"
     );
-    assert_eq!(value["tasks"][0]["steps"][0]["x_action_note"], "preserved");
+    assert_eq!(
+        value["folders"][0]["actions"][0]["spec"]["x_archive_note"],
+        "preserved"
+    );
 }
 
 #[test]
@@ -79,32 +96,41 @@ proptest! {
 
 #[test]
 fn unknown_action_is_preserved_but_blocked_from_execution() {
-    let source = fixture("formats/v1/plan-unknown-action.packplan.yaml");
+    let source = fixture("formats/v2/plan-unknown-action.packplan.yaml");
     let plan = decode_plan(&source).unwrap();
     let blockers = plan.execution_blockers();
     let encoded = encode_plan(&plan).unwrap();
     let value: Value = serde_yaml_ng::from_str(&encoded).unwrap();
 
-    assert!(matches!(plan.tasks[0].steps[0], ActionSpec::Unsupported(_)));
+    assert!(matches!(
+        plan.folders[0].actions[0].spec,
+        ActionSpec::Unsupported(_)
+    ));
     assert_eq!(
         blockers[0].code,
         ExecutionBlockerCode::UnsupportedActionType
     );
-    assert_eq!(value["tasks"][0]["steps"][0]["type"], "upload");
-    assert_eq!(value["tasks"][0]["steps"][0]["provider"], "future-cloud");
-    assert_eq!(value["tasks"][0]["steps"][0]["retry"]["count"], 2);
+    assert_eq!(value["folders"][0]["actions"][0]["spec"]["type"], "upload");
+    assert_eq!(
+        value["folders"][0]["actions"][0]["spec"]["provider"],
+        "future-cloud"
+    );
+    assert_eq!(
+        value["folders"][0]["actions"][0]["spec"]["retry"]["count"],
+        2
+    );
 }
 
 #[test]
 fn future_document_version_fails_without_panicking() {
-    let source = fixture("formats/future/plan-v2.packplan.yaml");
+    let source = fixture("formats/future/plan-v3.packplan.yaml");
     let error = decode_plan(&source).unwrap_err();
 
     assert!(matches!(
         error,
         DocumentError::UnsupportedVersion {
-            found: 2,
-            current: 1,
+            found: 3,
+            current: 2,
             ..
         }
     ));
@@ -112,7 +138,7 @@ fn future_document_version_fails_without_panicking() {
 
 #[test]
 fn missing_document_version_reports_the_version_path() {
-    let error = decode_plan("name: Missing version\ntasks: []\n").unwrap_err();
+    let error = decode_plan("name: Missing version\nfolders: []\n").unwrap_err();
 
     assert!(matches!(&error, DocumentError::MissingVersion { .. }));
     assert!(error.to_string().contains("$.version"));
@@ -145,7 +171,7 @@ fn invalid_known_field_reports_its_document_path() {
 
     match error {
         DocumentError::Decode { path, message, .. } => {
-            assert!(path.contains("tasks[0].steps[0]"), "{path}");
+            assert!(path.contains("folders[0].actions[0].spec"), "{path}");
             assert!(message.contains("unknown variant `rar`"), "{message}");
         }
         other => panic!("expected field decode error, received {other:?}"),
@@ -154,7 +180,7 @@ fn invalid_known_field_reports_its_document_path() {
 
 #[test]
 fn non_v7_identifier_reports_its_document_path() {
-    let source = fixture("formats/v1/plan.packplan.yaml").replace(
+    let source = fixture("formats/v2/plan.packplan.yaml").replace(
         "0190f5f0-7f8b-7d80-a120-4f4f9fe95c21",
         "550e8400-e29b-41d4-a716-446655440000",
     );
@@ -162,7 +188,7 @@ fn non_v7_identifier_reports_its_document_path() {
 
     match error {
         DocumentError::Decode { path, message, .. } => {
-            assert!(path.contains("tasks[0].id"), "{path}");
+            assert!(path.contains("folders[0].id"), "{path}");
             assert!(message.contains("UUIDv7"), "{message}");
         }
         other => panic!("expected identifier decode error, received {other:?}"),
@@ -171,10 +197,10 @@ fn non_v7_identifier_reports_its_document_path() {
 
 #[test]
 fn structural_validation_returns_every_duplicate_source() {
-    let source = fixture("formats/v1/plan.packplan.yaml");
+    let source = fixture("formats/v2/plan.packplan.yaml");
     let mut plan = decode_plan(&source).unwrap();
-    let duplicate = plan.tasks[0].clone();
-    plan.tasks.push(duplicate);
+    let duplicate = plan.folders[0].clone();
+    plan.folders.push(duplicate);
 
     let error = encode_plan(&plan).unwrap_err();
     let issues = error.validation_issues().unwrap();
@@ -182,7 +208,7 @@ fn structural_validation_returns_every_duplicate_source() {
     assert!(
         issues
             .iter()
-            .any(|issue| issue.code == ValidationCode::DuplicateTaskId)
+            .any(|issue| issue.code == ValidationCode::DuplicateFolderId)
     );
     assert!(
         issues

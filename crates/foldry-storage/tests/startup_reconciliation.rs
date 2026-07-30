@@ -31,7 +31,7 @@ fn cleanup_removes_only_old_verified_artifacts_from_dead_processes() {
     write_reservation(&output, "archive.zip", run_id, 100, 100);
     fs::write(output.join("unrelated.part"), "keep").unwrap();
     fs::write(
-        output.join(".legacy.zip.foldry-reserve"),
+        output.join(".unknown-format.zip.foldry-reserve"),
         run_id.to_string(),
     )
     .unwrap();
@@ -50,7 +50,7 @@ fn cleanup_removes_only_old_verified_artifacts_from_dead_processes() {
     assert_eq!(report.removed_temp_files, 1);
     assert_eq!(report.retained_unverified, 1);
     assert!(output.join("unrelated.part").exists());
-    assert!(output.join(".legacy.zip.foldry-reserve").exists());
+    assert!(output.join(".unknown-format.zip.foldry-reserve").exists());
 }
 
 #[test]
@@ -143,24 +143,31 @@ fn set_mtime(path: &Path, time: SystemTime) {
 mod sqlite_sample {
     use std::{fs, path::PathBuf};
 
-    use foldry_application::{RunRecord, RunSnapshot, RunState, Settings};
+    use foldry_application::{FolderSnapshot, RunRecord, RunSnapshot, RunState, Settings};
     use foldry_storage::decode_plan;
 
     pub fn sample_run(state: RunState) -> RunRecord {
         let source = fs::read_to_string(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tests/fixtures/formats/v1/plan.packplan.yaml"),
+                .join("../../tests/fixtures/formats/v2/plan.packplan.yaml"),
         )
         .unwrap();
-        let task = decode_plan(&source).unwrap().tasks.remove(0);
+        let mut folder = decode_plan(&source).unwrap().folders.remove(0);
+        let action = folder.actions.remove(0);
         RunRecord {
             run_id: foldry_application::RunId::new(),
-            task_id: task.id,
+            folder_id: folder.id,
+            action_id: action.id,
             state,
             started_at: "2026-07-27T10:00:00Z".parse().unwrap(),
             finished_at: None,
             snapshot: RunSnapshot {
-                task,
+                folder: FolderSnapshot {
+                    id: folder.id,
+                    source: folder.source,
+                },
+                action,
+                effective_profile_id: folder.default_profile_id,
                 settings: Settings::default(),
                 profile_text: "# snapshot".into(),
                 profile_hash: "hash".into(),

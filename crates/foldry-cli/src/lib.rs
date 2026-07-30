@@ -15,19 +15,19 @@ use std::{
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use foldry_application::{
-    ActionSpec, ActionVersion, ActivePlanRepository, ApplicationPorts, ApplicationServices,
-    ArchiveActionSpec, ArchiveFormat, ArchiveOutputSpec, ChecksumAlgorithm, Clock, CompiledProfile,
-    CompressionLevel, ConflictPolicy, ContractValidation, Extensions, LogRepository, PageRequest,
-    Plan, PlanVersion, PresetId, ProfileId, ResultSummary, RunEvent, RunEventKind, RunEventSink,
+    ActionId, ActionSpec, ActionVersion, ActivePlanRepository, ApplicationPorts,
+    ApplicationServices, ArchiveActionSpec, ArchiveFormat, ArchiveOutputDirectory,
+    ArchiveOutputSpec, ChecksumAlgorithm, Clock, CompiledProfile, CompressionLevel, ConflictPolicy,
+    Extensions, Folder, FolderAction, FolderId, FolderSnapshot, LogRepository, PageRequest, Plan,
+    PlanVersion, PresetId, ProfileId, ResultSummary, RunEvent, RunEventKind, RunEventSink,
     RunHistoryRepository, RunId, RunOutcome, RunRecord, RunSnapshot, RunState, Scheduler,
-    SchedulerPorts, Settings, SystemClock, Task, TaskId, UuidIdGenerator, VerificationMode,
-    VerificationSpec, detect_case_sensitivity, parse_profile,
+    SchedulerPorts, Settings, SystemClock, UuidIdGenerator, VerificationMode, VerificationSpec,
+    detect_case_sensitivity, parse_profile,
 };
 use foldry_storage::{
     AppDirectories, ArchiveRunExecutor, DirectoryOverrides, FileActivePlanRepository,
     FilePresetRepository, FileProfileRepository, FileSettingsRepository, SqliteRepository,
-    SystemProcessProbe, decode_plan, initialize_resource_copies, reconcile_startup,
-    scan_to_manifest,
+    SystemProcessProbe, initialize_resource_copies, reconcile_startup, scan_to_manifest,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -45,7 +45,14 @@ const EXIT_CANCELLED: i32 = 130;
 #[command(
     name = "foldry",
     version,
-    about = "Package folders using reusable filtering profiles"
+    about = "Prepare and archive folders with reusable Ignore Profiles",
+    after_help = "Examples:
+  foldry archive ./project --format tar-zst --checksum
+  foldry folder add ./project
+  foldry folder list
+  foldry run all
+
+Use `foldry <command> --help` for command-specific options."
 )]
 struct Cli {
     /// Emit one stable JSON result object.
@@ -76,14 +83,24 @@ enum Command {
         #[command(subcommand)]
         command: PresetCommand,
     },
-    /// Scan a source and report bounded inclusion totals.
+    /// Manage remembered folders.
+    Folder {
+        #[command(subcommand)]
+        command: FolderCommand,
+    },
+    /// Manage independent actions attached to folders.
+    Action {
+        #[command(subcommand)]
+        command: ActionCommand,
+    },
+    /// Preview one configured folder action.
     Preview(PreviewArgs),
     /// Create one archive immediately.
     Archive(ArchiveArgs),
-    /// Validate or run a plan.
-    Plan {
+    /// Run configured folders and repeat immutable snapshots.
+    Run {
         #[command(subcommand)]
-        command: PlanCommand,
+        command: RunCommand,
     },
     /// Read persisted run history.
     History {
@@ -99,41 +116,64 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum ProfileCommand {
+    /// List installed Ignore Profiles.
     List,
+    /// Print one profile, including its rules.
     Show {
+        /// Profile UUID.
         id: String,
     },
+    /// Create an empty Ignore Profile.
     Create {
+        /// Human-readable profile name.
         #[arg(long)]
         name: String,
+        /// File name under the Foldry profiles directory.
         #[arg(long)]
         filename: Option<String>,
     },
+    /// Replace a profile with the contents of a .packignore file.
     Edit {
+        /// Profile UUID. The replacement must preserve this @profile-id.
         id: String,
+        /// Path to the replacement .packignore file.
         #[arg(long = "from")]
         source: PathBuf,
     },
+    /// Delete an Ignore Profile.
     Delete {
+        /// Profile UUID.
         id: String,
     },
+    /// Validate a .packignore file without installing it.
     Validate {
+        /// Path to the .packignore file.
         path: PathBuf,
     },
 }
 
 #[derive(Debug, Subcommand)]
 enum PresetCommand {
+    /// List available preset working copies.
     List,
-    Install { id: String },
-    Remove { id: String },
+    /// Install or reset a preset working copy.
+    Install {
+        /// Preset ID shown by `foldry preset list`.
+        id: String,
+    },
+    /// Remove an installed preset working copy.
+    Remove {
+        /// Preset ID shown by `foldry preset list`.
+        id: String,
+    },
 }
 
 #[derive(Debug, Args)]
 struct PreviewArgs {
-    source: PathBuf,
-    #[arg(long)]
-    profile: Option<String>,
+    /// Folder UUID shown by `foldry folder list`.
+    folder_id: String,
+    /// Action UUID shown by `foldry action list <FOLDER_ID>`.
+    action_id: String,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -159,49 +199,194 @@ enum ConflictArg {
 
 #[derive(Debug, Args)]
 struct ArchiveArgs {
+    /// Folder to archive.
     source: PathBuf,
+    /// Ignore Profile UUID, file name, or exact profile name.
     #[arg(long)]
     profile: Option<String>,
+    /// Output directory. Defaults to the source folder's parent.
     #[arg(long)]
     output: Option<PathBuf>,
+    /// Archive file name without the format extension.
     #[arg(long)]
     name: Option<String>,
+    /// Archive format.
     #[arg(long, value_enum)]
     format: Option<FormatArg>,
+    /// Compression level.
     #[arg(long, value_enum)]
     compression: Option<CompressionArg>,
+    /// Behavior when the destination already exists.
     #[arg(long, value_enum)]
     conflict: Option<ConflictArg>,
+    /// Store the source contents at the archive root.
     #[arg(long)]
     no_include_root: bool,
+    /// Read every archived entry back after writing.
     #[arg(long)]
     full_verify: bool,
+    /// Calculate and report a SHA-256 checksum.
     #[arg(long)]
     checksum: bool,
 }
 
 #[derive(Debug, Subcommand)]
-enum PlanCommand {
-    Validate { path: Option<PathBuf> },
-    Run { path: Option<PathBuf> },
+enum FolderCommand {
+    /// List folders currently shown in Foldry.
+    List,
+    /// Remember a folder and create its first Archive action.
+    Add {
+        /// Existing folder to add.
+        source: PathBuf,
+        /// Default Ignore Profile UUID, file name, or exact name.
+        #[arg(long)]
+        profile: Option<String>,
+    },
+    /// Remove a folder from the main list but keep its configuration.
+    Unlist {
+        /// Folder UUID.
+        folder_id: String,
+    },
+    /// List remembered folders that are not in the main list.
+    Remembered,
+    /// Permanently forget one or more unlisted folders.
+    Forget {
+        /// Folder UUIDs. Only unlisted folders can be forgotten.
+        folder_ids: Vec<String>,
+    },
+    /// Include a folder in `foldry run all`.
+    Enable {
+        /// Folder UUID.
+        folder_id: String,
+    },
+    /// Exclude a folder from `foldry run all`.
+    Disable {
+        /// Folder UUID.
+        folder_id: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
-enum HistoryCommand {
+enum ActionCommand {
+    /// List actions configured for a folder.
     List {
-        #[arg(long, default_value_t = 20)]
-        limit: u32,
-        #[arg(long, default_value_t = 0)]
-        offset: u64,
+        /// Folder UUID.
+        folder_id: String,
     },
-    Show {
+    /// Add an Archive action to a folder.
+    Add {
+        /// Folder UUID.
+        folder_id: String,
+        /// Create the action enabled. New actions are disabled by default.
+        #[arg(long)]
+        enabled: bool,
+        /// Override the folder's Ignore Profile by UUID, file name, or exact name.
+        #[arg(long)]
+        profile: Option<String>,
+    },
+    /// Remove an action from a folder.
+    Remove {
+        /// Folder UUID.
+        folder_id: String,
+        /// Action UUID.
+        action_id: String,
+    },
+    /// Replace an action configuration from a JSON file.
+    Update {
+        /// Folder UUID.
+        folder_id: String,
+        /// Action UUID. The JSON file must preserve this ID.
+        action_id: String,
+        /// Path to a serialized FolderAction JSON object.
+        #[arg(long = "from")]
+        source: PathBuf,
+    },
+    /// Enable an action.
+    Enable {
+        /// Folder UUID.
+        folder_id: String,
+        /// Action UUID.
+        action_id: String,
+    },
+    /// Disable an action.
+    Disable {
+        /// Folder UUID.
+        folder_id: String,
+        /// Action UUID.
+        action_id: String,
+    },
+    /// Run one configured action immediately.
+    Run {
+        /// Folder UUID.
+        folder_id: String,
+        /// Action UUID.
+        action_id: String,
+    },
+    /// Set the action order for a folder.
+    Reorder {
+        /// Folder UUID.
+        folder_id: String,
+        /// Every action UUID, in the desired order.
+        action_ids: Vec<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RunCommand {
+    /// Run all enabled actions for one folder.
+    Folder {
+        /// Folder UUID.
+        folder_id: String,
+    },
+    /// Run enabled actions for every enabled folder.
+    All,
+    /// Repeat an immutable historical run snapshot.
+    Repeat {
+        /// Run UUID shown by `foldry history list`.
         run_id: String,
     },
 }
 
 #[derive(Debug, Subcommand)]
+enum HistoryCommand {
+    /// List recent runs, newest first.
+    List {
+        /// Maximum number of runs to return.
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+        /// Number of runs to skip.
+        #[arg(long, default_value_t = 0)]
+        offset: u64,
+        /// Filter by folder UUID.
+        #[arg(long)]
+        folder: Option<String>,
+        /// Filter by action UUID.
+        #[arg(long)]
+        action: Option<String>,
+    },
+    /// Show one complete persisted run record.
+    Show {
+        /// Run UUID.
+        run_id: String,
+    },
+    /// Read persisted log entries for a run.
+    Logs {
+        /// Run UUID.
+        run_id: String,
+        /// Maximum number of log entries to return.
+        #[arg(long, default_value_t = 200)]
+        limit: u32,
+        /// Number of log entries to skip.
+        #[arg(long, default_value_t = 0)]
+        offset: u64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum ConfigCommand {
+    /// Print effective settings.
     Show,
+    /// Print Foldry's config, data, cache, and database paths.
     Path,
 }
 
@@ -284,9 +469,11 @@ fn execute(cli: Cli) -> Result<CommandResult, CliError> {
     match cli.command {
         Command::Profile { command } => profile_command(&runtime, command),
         Command::Preset { command } => preset_command(&runtime, command),
+        Command::Folder { command } => folder_command(&runtime, command),
+        Command::Action { command } => action_command(&runtime, command, cli.json),
         Command::Preview(args) => preview_command(&runtime, args),
         Command::Archive(args) => archive_command(&runtime, args, cli.json),
-        Command::Plan { command } => plan_command(&runtime, command, cli.json),
+        Command::Run { command } => run_command(&runtime, command, cli.json),
         Command::History { command } => history_command(&runtime, command),
         Command::Config { command } => config_command(&runtime, command),
     }
@@ -372,13 +559,29 @@ impl Runtime {
             .map_err(|error| CliError::io(error.to_string()))?;
         let profile = if let Some(selector) = selector {
             let id = selector.parse::<ProfileId>().ok();
-            profiles.into_iter().find(|profile| {
-                profile.id == id
-                    || profile
-                        .path
-                        .file_name()
-                        .is_some_and(|name| name == selector)
-            })
+            profiles
+                .iter()
+                .find(|profile| profile.id == id)
+                .cloned()
+                .or_else(|| {
+                    profiles
+                        .iter()
+                        .find(|profile| {
+                            profile
+                                .path
+                                .file_name()
+                                .is_some_and(|name| name == selector)
+                        })
+                        .cloned()
+                })
+                .or_else(|| {
+                    let matches = profiles
+                        .iter()
+                        .filter(|profile| profile.name == selector)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    (matches.len() == 1).then(|| matches[0].clone())
+                })
         } else {
             let default_id = self
                 .services
@@ -619,12 +822,314 @@ fn preset_command(runtime: &Runtime, command: PresetCommand) -> Result<CommandRe
     }
 }
 
+fn folder_command(runtime: &Runtime, command: FolderCommand) -> Result<CommandResult, CliError> {
+    match command {
+        FolderCommand::List => {
+            let folders = runtime
+                .services
+                .state()
+                .map_err(|error| CliError::config(error.to_string()))?
+                .active_plan
+                .folders
+                .into_iter()
+                .filter(|folder| folder.listed)
+                .collect::<Vec<_>>();
+            folder_list_result(folders)
+        }
+        FolderCommand::Add { source, profile } => {
+            let profile_id = runtime
+                .resolve_profile(profile.as_deref())?
+                .id
+                .ok_or_else(|| CliError::config("profile is missing an ID"))?;
+            let folder = runtime
+                .services
+                .add_folder(source, Some(profile_id))
+                .map_err(|error| CliError::validation(error.to_string()))?;
+            ok(
+                serde_json::to_value(&folder).map_err(json_error)?,
+                format!("Added folder {}.", folder.source.display()),
+            )
+        }
+        FolderCommand::Unlist { folder_id } => {
+            let folder_id = parse_folder_id(&folder_id)?;
+            let changed = runtime
+                .services
+                .unlist_folder(folder_id)
+                .map_err(|error| CliError::validation(error.to_string()))?;
+            ok(
+                json!({"folder_id": folder_id, "unlisted": changed}),
+                if changed {
+                    format!("Unlisted folder {folder_id}.")
+                } else {
+                    format!("Folder {folder_id} was already unlisted.")
+                },
+            )
+        }
+        FolderCommand::Remembered => {
+            let folders = runtime
+                .services
+                .unlisted_folders()
+                .map_err(|error| CliError::io(error.to_string()))?;
+            folder_list_result(folders)
+        }
+        FolderCommand::Forget { folder_ids } => {
+            if folder_ids.is_empty() {
+                return Err(CliError::validation(
+                    "provide at least one remembered folder ID",
+                ));
+            }
+            let folder_ids = folder_ids
+                .iter()
+                .map(|id| parse_folder_id(id))
+                .collect::<Result<Vec<_>, _>>()?;
+            let removed = runtime
+                .services
+                .forget_folders(&folder_ids)
+                .map_err(|error| CliError::validation(error.to_string()))?;
+            ok(
+                json!({"forgotten": removed, "folder_ids": folder_ids}),
+                format!("Forgot {removed} folder(s)."),
+            )
+        }
+        FolderCommand::Enable { folder_id } => set_folder_enabled(runtime, &folder_id, true),
+        FolderCommand::Disable { folder_id } => set_folder_enabled(runtime, &folder_id, false),
+    }
+}
+
+fn action_command(
+    runtime: &Runtime,
+    command: ActionCommand,
+    json_output: bool,
+) -> Result<CommandResult, CliError> {
+    match command {
+        ActionCommand::List { folder_id } => {
+            let folder = configured_folder(runtime, parse_folder_id(&folder_id)?)?;
+            let human = folder
+                .actions
+                .iter()
+                .map(|action| {
+                    format!(
+                        "{}\t{}\t{}",
+                        action.id,
+                        action.spec.action_type(),
+                        if action.enabled {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            ok(
+                serde_json::to_value(&folder.actions).map_err(json_error)?,
+                human,
+            )
+        }
+        ActionCommand::Add {
+            folder_id,
+            enabled,
+            profile,
+        } => {
+            let folder_id = parse_folder_id(&folder_id)?;
+            let profile_id = profile
+                .as_deref()
+                .map(|selector| {
+                    runtime
+                        .resolve_profile(Some(selector))?
+                        .id
+                        .ok_or_else(|| CliError::config("profile is missing an ID"))
+                })
+                .transpose()?;
+            let action = runtime
+                .services
+                .add_archive_action(folder_id, enabled, profile_id)
+                .map_err(|error| CliError::validation(error.to_string()))?;
+            ok(
+                serde_json::to_value(&action).map_err(json_error)?,
+                format!("Added Archive action {}.", action.id),
+            )
+        }
+        ActionCommand::Remove {
+            folder_id,
+            action_id,
+        } => {
+            let folder_id = parse_folder_id(&folder_id)?;
+            let action_id = parse_action_id(&action_id)?;
+            let removed = runtime
+                .services
+                .remove_action(folder_id, action_id)
+                .map_err(|error| CliError::validation(error.to_string()))?;
+            if !removed {
+                return Err(CliError::validation(format!(
+                    "action {action_id} not found"
+                )));
+            }
+            ok(
+                json!({"folder_id": folder_id, "removed": action_id}),
+                format!("Removed action {action_id}."),
+            )
+        }
+        ActionCommand::Update {
+            folder_id,
+            action_id,
+            source,
+        } => {
+            let folder_id = parse_folder_id(&folder_id)?;
+            let action_id = parse_action_id(&action_id)?;
+            let text = fs::read_to_string(&source).map_err(|error| {
+                CliError::io(format!("cannot read {}: {error}", source.display()))
+            })?;
+            let action: FolderAction = serde_json::from_str(&text).map_err(|error| {
+                CliError::validation(format!("invalid FolderAction JSON: {error}"))
+            })?;
+            if action.id != action_id {
+                return Err(CliError::validation(
+                    "updated action JSON must preserve its action ID",
+                ));
+            }
+            runtime
+                .services
+                .update_action(folder_id, action.clone())
+                .map_err(|error| CliError::validation(error.to_string()))?;
+            ok(
+                serde_json::to_value(&action).map_err(json_error)?,
+                format!("Updated action {action_id}."),
+            )
+        }
+        ActionCommand::Enable {
+            folder_id,
+            action_id,
+        } => set_action_enabled(runtime, &folder_id, &action_id, true),
+        ActionCommand::Disable {
+            folder_id,
+            action_id,
+        } => set_action_enabled(runtime, &folder_id, &action_id, false),
+        ActionCommand::Run {
+            folder_id,
+            action_id,
+        } => {
+            let run = runtime
+                .services
+                .prepare_run_current(parse_folder_id(&folder_id)?, parse_action_id(&action_id)?)
+                .map_err(|error| CliError::validation(error.to_string()))?;
+            result_from_summaries(execute_runs(runtime, vec![run], json_output)?)
+        }
+        ActionCommand::Reorder {
+            folder_id,
+            action_ids,
+        } => {
+            let folder_id = parse_folder_id(&folder_id)?;
+            let action_ids = action_ids
+                .iter()
+                .map(|id| parse_action_id(id))
+                .collect::<Result<Vec<_>, _>>()?;
+            runtime
+                .services
+                .reorder_actions(folder_id, &action_ids)
+                .map_err(|error| CliError::validation(error.to_string()))?;
+            ok(
+                json!({"folder_id": folder_id, "action_ids": action_ids}),
+                format!("Reordered actions for folder {folder_id}."),
+            )
+        }
+    }
+}
+
+fn folder_list_result(folders: Vec<Folder>) -> Result<CommandResult, CliError> {
+    let human = folders
+        .iter()
+        .map(|folder| {
+            format!(
+                "{}\t{}\t{}\t{} action(s)",
+                folder.id,
+                folder.source.display(),
+                if folder.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                folder.actions.len()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    ok(serde_json::to_value(folders).map_err(json_error)?, human)
+}
+
+fn configured_folder(runtime: &Runtime, folder_id: FolderId) -> Result<Folder, CliError> {
+    runtime
+        .services
+        .state()
+        .map_err(|error| CliError::config(error.to_string()))?
+        .active_plan
+        .folders
+        .into_iter()
+        .find(|folder| folder.id == folder_id)
+        .ok_or_else(|| CliError::validation(format!("folder {folder_id} not found")))
+}
+
+fn set_folder_enabled(
+    runtime: &Runtime,
+    folder_id: &str,
+    enabled: bool,
+) -> Result<CommandResult, CliError> {
+    let folder_id = parse_folder_id(folder_id)?;
+    let mut folder = configured_folder(runtime, folder_id)?;
+    folder.enabled = enabled;
+    runtime
+        .services
+        .update_folder(folder)
+        .map_err(|error| CliError::validation(error.to_string()))?;
+    ok(
+        json!({"folder_id": folder_id, "enabled": enabled}),
+        format!(
+            "{} folder {folder_id}.",
+            if enabled { "Enabled" } else { "Disabled" }
+        ),
+    )
+}
+
+fn set_action_enabled(
+    runtime: &Runtime,
+    folder_id: &str,
+    action_id: &str,
+    enabled: bool,
+) -> Result<CommandResult, CliError> {
+    let folder_id = parse_folder_id(folder_id)?;
+    let action_id = parse_action_id(action_id)?;
+    let mut action = configured_folder(runtime, folder_id)?
+        .actions
+        .into_iter()
+        .find(|action| action.id == action_id)
+        .ok_or_else(|| CliError::validation(format!("action {action_id} not found")))?;
+    action.enabled = enabled;
+    runtime
+        .services
+        .update_action(folder_id, action)
+        .map_err(|error| CliError::validation(error.to_string()))?;
+    ok(
+        json!({"folder_id": folder_id, "action_id": action_id, "enabled": enabled}),
+        format!(
+            "{} action {action_id}.",
+            if enabled { "Enabled" } else { "Disabled" }
+        ),
+    )
+}
+
 fn preview_command(runtime: &Runtime, args: PreviewArgs) -> Result<CommandResult, CliError> {
-    let profile = runtime.resolve_profile(args.profile.as_deref())?;
+    let preview = runtime
+        .services
+        .prepare_preview(
+            parse_folder_id(&args.folder_id)?,
+            parse_action_id(&args.action_id)?,
+        )
+        .map_err(|error| CliError::validation(error.to_string()))?;
+    let profile = preview.profile;
     let parsed = parse_profile(&profile.text);
     let profile_contract = parsed.profile.expect("validated repository profile");
-    let case =
-        detect_case_sensitivity(&args.source).map_err(|error| CliError::io(error.to_string()))?;
+    let case = detect_case_sensitivity(&preview.folder.source)
+        .map_err(|error| CliError::io(error.to_string()))?;
     let matcher =
         CompiledProfile::new(&profile_contract, case.value).map_err(CliError::validation)?;
     let cancellation = foldry_application::CancellationToken::default();
@@ -644,7 +1149,7 @@ fn preview_command(runtime: &Runtime, args: PreviewArgs) -> Result<CommandResult
     let result = scan_to_manifest(
         &runtime.directories.manifests(),
         &manifest_id,
-        &args.source,
+        &preview.folder.source,
         &matcher,
         &cancellation,
     );
@@ -665,7 +1170,12 @@ fn preview_command(runtime: &Runtime, args: PreviewArgs) -> Result<CommandResult
         .remove()
         .map_err(|error| CliError::io(error.to_string()))?;
     ok(
-        serde_json::to_value(&summary).map_err(json_error)?,
+        json!({
+            "folder_id": preview.folder.id,
+            "action_id": preview.action.id,
+            "effective_profile_id": profile.id,
+            "summary": summary,
+        }),
         format!(
             "Included {} entries ({} bytes); excluded {}; skipped {}.",
             summary.included_entries,
@@ -700,15 +1210,17 @@ fn archive_command(
             |name| name.to_string_lossy().into_owned(),
         )
     });
-    let task = Task {
-        id: TaskId::new(),
-        source,
+    let profile_id = profile.id.expect("valid profile has ID");
+    let action = FolderAction {
+        id: ActionId::new(),
         enabled: true,
-        profile_id: profile.id.expect("valid profile has ID"),
-        steps: vec![ActionSpec::Archive(ArchiveActionSpec {
+        profile_id_override: None,
+        spec: ActionSpec::Archive(ArchiveActionSpec {
             version: ActionVersion::V1,
             output: ArchiveOutputSpec {
-                directory: args.output.unwrap_or(defaults.output_directory),
+                directory: args.output.map_or(ArchiveOutputDirectory::Parent, |path| {
+                    ArchiveOutputDirectory::Custom { path }
+                }),
                 filename,
                 format,
                 compression: args.compression.map_or(defaults.compression, Into::into),
@@ -731,82 +1243,65 @@ fn archive_command(
                 extensions: Extensions::new(),
             },
             extensions: Extensions::new(),
-        })],
+        }),
         extensions: Extensions::new(),
     };
-    let run = queued_run(task, settings, profile.text);
+    let folder = Folder {
+        id: FolderId::new(),
+        source,
+        listed: true,
+        enabled: true,
+        default_profile_id: profile_id,
+        actions: vec![action.clone()],
+        extensions: Extensions::new(),
+    };
+    let run = queued_run(folder, action, profile_id, settings, profile.text);
     let summaries = execute_runs(runtime, vec![run], json_output)?;
     result_from_summaries(summaries)
 }
 
-fn plan_command(
+fn run_command(
     runtime: &Runtime,
-    command: PlanCommand,
+    command: RunCommand,
     json_output: bool,
 ) -> Result<CommandResult, CliError> {
-    let (plan, source) = match &command {
-        PlanCommand::Validate { path } | PlanCommand::Run { path } => {
-            if let Some(path) = path {
-                let text = fs::read_to_string(path).map_err(|error| {
-                    CliError::io(format!("cannot read {}: {error}", path.display()))
-                })?;
-                (
-                    decode_plan(&text).map_err(|error| CliError::validation(error.to_string()))?,
-                    path.display().to_string(),
-                )
-            } else {
-                (
-                    runtime
-                        .services
-                        .state()
-                        .map_err(|error| CliError::config(error.to_string()))?
-                        .active_plan,
-                    runtime.directories.active_plan().display().to_string(),
-                )
-            }
-        }
+    let runs = match command {
+        RunCommand::Folder { folder_id } => runtime
+            .services
+            .prepare_folder_enabled(parse_folder_id(&folder_id)?)
+            .map_err(|error| CliError::validation(error.to_string()))?,
+        RunCommand::All => runtime
+            .services
+            .prepare_all_enabled()
+            .map_err(|error| CliError::validation(error.to_string()))?,
+        RunCommand::Repeat { run_id } => vec![
+            runtime
+                .services
+                .repeat_run(parse_run_id(&run_id)?)
+                .map_err(|error| CliError::validation(error.to_string()))?,
+        ],
     };
-    let issues = plan.validate();
-    let blockers = plan.execution_blockers();
-    if matches!(command, PlanCommand::Validate { .. }) {
-        let valid = issues.is_empty() && blockers.is_empty();
-        let data =
-            json!({"valid": valid, "source": source, "issues": issues, "blockers": blockers});
-        return Ok(CommandResult {
-            exit_code: if valid { EXIT_SUCCESS } else { EXIT_VALIDATION },
-            data,
-            human: if valid {
-                format!("Plan {source} is valid.")
-            } else {
-                format!("Plan {source} is not executable.")
-            },
-        });
-    }
-    if !issues.is_empty() || !blockers.is_empty() {
-        return Err(CliError::validation("plan is not executable"));
-    }
-    let settings = runtime
-        .services
-        .state()
-        .map_err(|error| CliError::config(error.to_string()))?
-        .settings;
-    let mut runs = Vec::new();
-    for task in plan.tasks.into_iter().filter(|task| task.enabled) {
-        let profile = runtime.resolve_profile(Some(&task.profile_id.to_string()))?;
-        runs.push(queued_run(task, settings.clone(), profile.text));
-    }
     if runs.is_empty() {
-        return ok(json!([]), "Plan has no enabled tasks.".into());
+        return ok(json!([]), "No enabled actions to run.".into());
     }
     result_from_summaries(execute_runs(runtime, runs, json_output)?)
 }
 
 fn history_command(runtime: &Runtime, command: HistoryCommand) -> Result<CommandResult, CliError> {
     match command {
-        HistoryCommand::List { limit, offset } => {
+        HistoryCommand::List {
+            limit,
+            offset,
+            folder,
+            action,
+        } => {
             let runs = runtime
                 .services
-                .history(PageRequest { offset, limit })
+                .history_filtered(
+                    PageRequest { offset, limit },
+                    folder.as_deref().map(parse_folder_id).transpose()?,
+                    action.as_deref().map(parse_action_id).transpose()?,
+                )
                 .map_err(|error| CliError::io(error.to_string()))?;
             let human = runs
                 .iter()
@@ -815,7 +1310,7 @@ fn history_command(runtime: &Runtime, command: HistoryCommand) -> Result<Command
                         "{}\t{:?}\t{}",
                         run.run_id,
                         run.state,
-                        run.snapshot.task.source.display()
+                        run.snapshot.folder.source.display()
                     )
                 })
                 .collect::<Vec<_>>()
@@ -835,6 +1330,23 @@ fn history_command(runtime: &Runtime, command: HistoryCommand) -> Result<Command
                 serde_json::to_value(&run).map_err(json_error)?,
                 format!("{:#?}", run),
             )
+        }
+        HistoryCommand::Logs {
+            run_id,
+            limit,
+            offset,
+        } => {
+            let run_id = parse_run_id(&run_id)?;
+            let logs = runtime
+                .services
+                .logs(run_id, PageRequest { offset, limit })
+                .map_err(|error| CliError::io(error.to_string()))?;
+            let human = logs
+                .iter()
+                .map(|log| format!("{}\t{:?}\t{}", log.sequence, log.level, log.message))
+                .collect::<Vec<_>>()
+                .join("\n");
+            ok(serde_json::to_value(logs).map_err(json_error)?, human)
         }
     }
 }
@@ -1027,15 +1539,27 @@ fn result_from_summaries(summaries: Vec<ResultSummary>) -> Result<CommandResult,
     })
 }
 
-fn queued_run(task: Task, settings: Settings, profile_text: String) -> RunRecord {
+fn queued_run(
+    folder: Folder,
+    action: FolderAction,
+    effective_profile_id: ProfileId,
+    settings: Settings,
+    profile_text: String,
+) -> RunRecord {
     RunRecord {
         run_id: RunId::new(),
-        task_id: task.id,
+        folder_id: folder.id,
+        action_id: action.id,
         state: RunState::Queued,
         started_at: SystemClock.now(),
         finished_at: None,
         snapshot: RunSnapshot {
-            task,
+            folder: FolderSnapshot {
+                id: folder.id,
+                source: folder.source,
+            },
+            action,
+            effective_profile_id,
             settings,
             profile_hash: format!("{:x}", Sha256::digest(profile_text.as_bytes())),
             profile_text,
@@ -1059,18 +1583,22 @@ fn empty_plan() -> Plan {
     Plan {
         version: PlanVersion::CURRENT,
         name: "Active plan".into(),
-        tasks: Vec::new(),
+        folders: Vec::new(),
         extensions: Extensions::new(),
     }
 }
 
 fn output_directories(plan: &Plan) -> Vec<PathBuf> {
-    plan.tasks
+    plan.folders
         .iter()
-        .flat_map(|task| task.steps.iter())
-        .filter_map(|step| match step {
-            ActionSpec::Archive(action) => Some(action.output.directory.clone()),
-            ActionSpec::Unsupported(_) => None,
+        .flat_map(|folder| {
+            folder
+                .actions
+                .iter()
+                .filter_map(|action| match &action.spec {
+                    ActionSpec::Archive(action) => action.output.directory.resolve(&folder.source),
+                    ActionSpec::Unsupported(_) => None,
+                })
         })
         .collect()
 }
@@ -1135,6 +1663,24 @@ fn parse_profile_id(value: &str) -> Result<ProfileId, CliError> {
     value
         .parse()
         .map_err(|error| CliError::validation(format!("invalid profile ID: {error}")))
+}
+
+fn parse_folder_id(value: &str) -> Result<FolderId, CliError> {
+    value
+        .parse()
+        .map_err(|error| CliError::validation(format!("invalid folder ID: {error}")))
+}
+
+fn parse_action_id(value: &str) -> Result<ActionId, CliError> {
+    value
+        .parse()
+        .map_err(|error| CliError::validation(format!("invalid action ID: {error}")))
+}
+
+fn parse_run_id(value: &str) -> Result<RunId, CliError> {
+    value
+        .parse()
+        .map_err(|error| CliError::validation(format!("invalid run ID: {error}")))
 }
 
 fn parse_preset_id(value: &str) -> Result<PresetId, CliError> {

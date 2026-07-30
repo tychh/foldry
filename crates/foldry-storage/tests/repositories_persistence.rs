@@ -101,6 +101,19 @@ fn invalid_profile_is_saved_while_previous_good_version_is_preserved() {
 }
 
 #[test]
+fn profile_repository_refuses_to_delete_the_default_working_copy() {
+    let root = tempfile::tempdir().unwrap();
+    let profiles = root.path().join("profiles");
+    let repository = FileProfileRepository::new(profiles.clone(), resource_profile());
+    let profile = repository.restore_default().unwrap();
+
+    let error = repository.delete(profile.id.unwrap()).unwrap_err();
+
+    assert!(error.message.contains("default profile cannot be deleted"));
+    assert!(profiles.join("default.packignore").is_file());
+}
+
+#[test]
 fn installing_resources_never_overwrites_a_working_copy_and_reset_is_explicit() {
     let root = tempfile::tempdir().unwrap();
     let resources = root.path().join("resources");
@@ -184,7 +197,7 @@ fn one_time_resource_initialization_preserves_later_deletions() {
 fn fixture_plan() -> foldry_application::Plan {
     let source = fs::read_to_string(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/formats/v1/plan.packplan.yaml"),
+            .join("../../tests/fixtures/formats/v2/plan.packplan.yaml"),
     )
     .unwrap();
     decode_plan(&source).unwrap()

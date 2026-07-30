@@ -1,6 +1,7 @@
 {
   "name": "foldry-workspace",
-  "version": "0.1.0",
+  "version": "0.1.2",
+  "license": "MIT OR Apache-2.0",
   "private": true,
   "packageManager": "pnpm@11.17.0",
   "engines": {
@@ -11,8 +12,9 @@
     "dev": "pnpm --dir frontend dev",
     "desktop:dev": "tauri dev --config crates/foldry-tauri/tauri.conf.json",
     "desktop:build": "tauri build --config crates/foldry-tauri/tauri.conf.json",
-    "format": "prettier --write \"frontend/**/*.{ts,tsx,css,html,json}\" \"scripts/**/*.mjs\" \"docs/**/*.md\" README.md CONTRIBUTING.md package.json pnpm-workspace.yaml \".github/**/*.{yml,yaml}\" && cargo fmt --all",
-    "format:check": "prettier --check \"frontend/**/*.{ts,tsx,css,html,json}\" \"scripts/**/*.mjs\" \"docs/**/*.md\" README.md CONTRIBUTING.md package.json pnpm-workspace.yaml \".github/**/*.{yml,yaml}\" && cargo fmt --all --check",
+    "icons:generate": "node scripts/generate-icons.mjs",
+    "format": "prettier --no-error-on-unmatched-pattern --write \"frontend/**/*.{ts,tsx,css,html,json}\" \"scripts/**/*.mjs\" \"docs/**/*.md\" README.md CONTRIBUTING.md SECURITY.md package.json pnpm-workspace.yaml \".github/**/*.{yml,yaml}\" && cargo fmt --all",
+    "format:check": "prettier --no-error-on-unmatched-pattern --check \"frontend/**/*.{ts,tsx,css,html,json}\" \"scripts/**/*.mjs\" \"docs/**/*.md\" README.md CONTRIBUTING.md SECURITY.md package.json pnpm-workspace.yaml \".github/**/*.{yml,yaml}\" && cargo fmt --all --check",
     "lint": "pnpm --dir frontend lint && cargo clippy --workspace --all-targets --all-features -- -D warnings",
     "contracts:generate": "cargo run -p foldry-application --example export_contracts",
     "contracts:check": "cargo run -p foldry-application --example export_contracts -- --check",

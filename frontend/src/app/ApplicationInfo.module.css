@@ -1,0 +1,155 @@
+.modalContent {
+  overflow: hidden;
+}
+
+.modalBody {
+  max-height: min(75vh, 48rem);
+  overflow-y: auto;
+}
+
+.appIcon {
+  width: 3.5rem;
+  height: 3.5rem;
+  flex: 0 0 3.5rem;
+  box-sizing: border-box;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: 1rem;
+  box-shadow: var(--mantine-shadow-sm);
+}
+
+.summary,
+.helpIntro {
+  max-width: 38rem;
+  line-height: 1.55;
+}
+
+.factCard,
+.helpFeature {
+  background: color-mix(
+    in srgb,
+    var(--mantine-color-body) 94%,
+    var(--mantine-primary-color-light)
+  );
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--mantine-spacing-sm);
+}
+
+.projectFact,
+.licenseFact {
+  min-width: 0;
+}
+
+.projectLink {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
+  font-size: var(--mantine-font-size-sm);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.projectLink:hover {
+  text-decoration: underline;
+}
+
+.stackBadge {
+  text-transform: none;
+}
+
+.thirdParty {
+  line-height: 1.55;
+}
+
+.creatorAvatar {
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.signature {
+  font-family: var(--mantine-font-family-monospace);
+  font-style: italic;
+  font-weight: 700;
+}
+
+.creatorCredit {
+  white-space: nowrap;
+}
+
+.aboutFooter {
+  gap: var(--mantine-spacing-md);
+}
+
+.supportLink {
+  display: inline-flex;
+  gap: 0.55rem;
+  align-items: center;
+  justify-content: flex-end;
+  color: var(--mantine-color-dimmed);
+  font-size: var(--mantine-font-size-xs);
+  line-height: 1.4;
+  text-align: right;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.supportLink:hover {
+  color: var(--mantine-color-text);
+}
+
+.koFiMark {
+  width: 1.45rem;
+  height: 1.45rem;
+  flex: 0 0 1.45rem;
+  fill: #ff5e5b;
+}
+
+.localNote {
+  color: var(--mantine-primary-color-filled);
+  background: var(--mantine-primary-color-light);
+  border-color: var(--mantine-primary-color-light-color);
+}
+
+.helpFeature {
+  height: 100%;
+}
+
+.wideFeature {
+  grid-column: 1 / -1;
+}
+
+.workflow {
+  border-style: dashed;
+}
+
+@media (max-width: 36em) {
+  .modalBody {
+    max-height: 80vh;
+  }
+
+  .appIcon {
+    width: 3rem;
+    height: 3rem;
+    flex-basis: 3rem;
+    border-radius: 0.85rem;
+  }
+
+  .facts {
+    grid-template-columns: 1fr;
+  }
+
+  .aboutFooter {
+    align-items: flex-start;
+  }
+
+  .supportLink {
+    justify-content: flex-start;
+    text-align: left;
+  }
+}

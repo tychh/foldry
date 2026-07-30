@@ -11,10 +11,10 @@ use std::{
 };
 
 use foldry_application::{
-    Clock, Extensions, LogLevel, LogRepository, PageRequest, ProgressPhase, ProgressSnapshot,
-    ResultSummary, RunEvent, RunEventKind, RunEventSink, RunExecutor, RunHistoryRepository, RunId,
-    RunOutcome, RunRecord, RunReporter, RunSnapshot, RunState, Scheduler, SchedulerPorts, Settings,
-    TaskId,
+    Clock, Extensions, FolderId, FolderSnapshot, LogLevel, LogRepository, PageRequest,
+    ProgressPhase, ProgressSnapshot, ResultSummary, RunEvent, RunEventKind, RunEventSink,
+    RunExecutor, RunHistoryRepository, RunId, RunOutcome, RunRecord, RunReporter, RunSnapshot,
+    RunState, Scheduler, SchedulerPorts, Settings,
 };
 use foldry_storage::{SqliteRepository, decode_plan};
 use jiff::Timestamp;
@@ -78,8 +78,8 @@ struct ControlledExecutor {
 
 #[derive(Default)]
 struct ControlState {
-    started: Vec<TaskId>,
-    released: HashSet<TaskId>,
+    started: Vec<FolderId>,
+    released: HashSet<FolderId>,
     active: usize,
     max_active: usize,
 }
@@ -95,12 +95,12 @@ impl ControlledExecutor {
         }
     }
 
-    fn release(&self, task_id: TaskId) {
-        self.state.lock().unwrap().released.insert(task_id);
+    fn release(&self, folder_id: FolderId) {
+        self.state.lock().unwrap().released.insert(folder_id);
         self.changed.notify_all();
     }
 
-    fn started(&self) -> Vec<TaskId> {
+    fn started(&self) -> Vec<FolderId> {
         self.state.lock().unwrap().started.clone()
     }
 }
@@ -112,10 +112,10 @@ impl RunExecutor for ControlledExecutor {
         control: &foldry_application::ExecutionControl,
         reporter: &dyn RunReporter,
     ) -> ResultSummary {
-        let task_id = run.snapshot.task.id;
+        let folder_id = run.snapshot.folder.id;
         {
             let mut state = self.state.lock().unwrap();
-            state.started.push(task_id);
+            state.started.push(folder_id);
             state.active += 1;
             state.max_active = state.max_active.max(state.active);
             self.changed.notify_all();
@@ -126,7 +126,7 @@ impl RunExecutor for ControlledExecutor {
             }
             reporter.progress(progress(1));
             let mut state = self.state.lock().unwrap();
-            if state.released.remove(&task_id) {
+            if state.released.remove(&folder_id) {
                 break false;
             }
             state = self
@@ -207,13 +207,13 @@ fn fifo_queue_respects_parallel_limit_and_starts_next_after_completion() {
     thread::sleep(Duration::from_millis(100));
     assert_eq!(executor.started().len(), 2);
 
-    executor.release(runs[0].task_id);
+    executor.release(runs[0].folder_id);
     events.wait_for_terminal(runs[0].run_id);
     executor.wait_for_started(3);
-    executor.release(runs[1].task_id);
-    executor.release(runs[2].task_id);
+    executor.release(runs[1].folder_id);
+    executor.release(runs[2].folder_id);
     executor.wait_for_started(4);
-    executor.release(runs[3].task_id);
+    executor.release(runs[3].folder_id);
     for run in &runs {
         events.wait_for_terminal(run.run_id);
     }
@@ -264,7 +264,7 @@ fn paused_run_keeps_its_slot_and_stop_wakes_it_for_the_next_run() {
     assert!(!scheduler.stop(first.run_id).unwrap());
     events.wait_for_terminal(first.run_id);
     executor.wait_for_started(2);
-    executor.release(second.task_id);
+    executor.release(second.folder_id);
     events.wait_for_terminal(second.run_id);
     assert_eq!(
         scheduler.record(first.run_id).unwrap().state,
@@ -286,8 +286,62 @@ fn global_pause_holds_queued_work_until_resume() {
     assert!(executor.started().is_empty());
     assert_eq!(scheduler.resume_all().unwrap(), 0);
     executor.wait_for_started(1);
-    executor.release(run.task_id);
+    executor.release(run.folder_id);
     events.wait_for_terminal(run.run_id);
+}
+
+#[test]
+fn global_stop_clears_pause_and_allows_a_followup_run() {
+    let repository = Arc::new(SqliteRepository::open_in_memory().unwrap());
+    let executor = Arc::new(ControlledExecutor::default());
+    let events = Arc::new(CollectingEvents::default());
+    let scheduler = scheduler(Arc::clone(&repository), executor.clone(), events.clone(), 1);
+    let stopped = sample_run();
+    let followup = sample_run();
+
+    assert_eq!(scheduler.pause_all().unwrap(), 0);
+    scheduler.enqueue(stopped.clone()).unwrap();
+    thread::sleep(Duration::from_millis(150));
+    assert!(executor.started().is_empty());
+
+    assert_eq!(scheduler.stop_all().unwrap(), 1);
+    events.wait_for_terminal(stopped.run_id);
+    assert_eq!(
+        scheduler.record(stopped.run_id).unwrap().state,
+        RunState::Stopped
+    );
+
+    scheduler.enqueue(followup.clone()).unwrap();
+    executor.wait_for_started(1);
+    executor.release(followup.folder_id);
+    events.wait_for_terminal(followup.run_id);
+    assert_eq!(
+        scheduler.record(followup.run_id).unwrap().state,
+        RunState::Succeeded
+    );
+}
+
+#[test]
+fn global_stop_finalizes_active_and_queued_runs() {
+    let repository = Arc::new(SqliteRepository::open_in_memory().unwrap());
+    let executor = Arc::new(ControlledExecutor::default());
+    let events = Arc::new(CollectingEvents::default());
+    let scheduler = scheduler(Arc::clone(&repository), executor.clone(), events.clone(), 1);
+    let runs = (0..3).map(|_| sample_run()).collect::<Vec<_>>();
+    for run in &runs {
+        scheduler.enqueue(run.clone()).unwrap();
+    }
+    executor.wait_for_started(1);
+
+    assert_eq!(scheduler.stop_all().unwrap(), 3);
+    for run in &runs {
+        events.wait_for_terminal(run.run_id);
+        assert_eq!(
+            scheduler.record(run.run_id).unwrap().state,
+            RunState::Stopped
+        );
+    }
+    assert_eq!(executor.started().len(), 1);
 }
 
 #[test]
@@ -449,16 +503,23 @@ fn scheduler(
 }
 
 fn sample_run() -> RunRecord {
-    let mut task = fixture_task();
-    task.id = TaskId::new();
+    let mut folder = fixture_task();
+    folder.id = FolderId::new();
+    let action = folder.actions.remove(0);
     RunRecord {
         run_id: RunId::new(),
-        task_id: task.id,
+        folder_id: folder.id,
+        action_id: action.id,
         state: RunState::Queued,
         started_at: "2026-07-27T12:00:00Z".parse().unwrap(),
         finished_at: None,
         snapshot: RunSnapshot {
-            task,
+            folder: FolderSnapshot {
+                id: folder.id,
+                source: folder.source,
+            },
+            action,
+            effective_profile_id: folder.default_profile_id,
             settings: Settings::default(),
             profile_text: "# snapshot".into(),
             profile_hash: "hash".into(),
@@ -467,13 +528,13 @@ fn sample_run() -> RunRecord {
     }
 }
 
-fn fixture_task() -> foldry_application::Task {
+fn fixture_task() -> foldry_application::Folder {
     let source = fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/formats/v1/plan.packplan.yaml"),
+            .join("../../tests/fixtures/formats/v2/plan.packplan.yaml"),
     )
     .unwrap();
-    decode_plan(&source).unwrap().tasks.remove(0)
+    decode_plan(&source).unwrap().folders.remove(0)
 }
 
 fn progress(value: u64) -> ProgressSnapshot {

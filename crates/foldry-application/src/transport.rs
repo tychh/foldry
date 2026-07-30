@@ -21,7 +21,8 @@ macro_rules! string_id_dto {
 
 string_id_dto!(ProfileIdDto, "ProfileId");
 string_id_dto!(PresetIdDto, "PresetId");
-string_id_dto!(TaskIdDto, "TaskId");
+string_id_dto!(FolderIdDto, "FolderId");
+string_id_dto!(ActionIdDto, "ActionId");
 string_id_dto!(RunIdDto, "RunId");
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -75,10 +76,22 @@ pub enum ChecksumAlgorithmDto {
     Sha256,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+#[ts(
+    rename = "ArchiveOutputDirectory",
+    tag = "mode",
+    rename_all = "snake_case"
+)]
+pub enum ArchiveOutputDirectoryDto {
+    Parent,
+    Custom { path: String },
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 #[ts(rename = "ArchiveOutputSpec")]
 pub struct ArchiveOutputSpecDto {
-    pub directory: String,
+    pub directory: ArchiveOutputDirectoryDto,
     pub filename: String,
     pub format: ArchiveFormatDto,
     pub compression: CompressionLevelDto,
@@ -116,13 +129,24 @@ pub struct ActionSpecDto {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
-#[ts(rename = "Task")]
-pub struct TaskDto {
-    pub id: TaskIdDto,
-    pub source: String,
+#[ts(rename = "FolderAction")]
+pub struct FolderActionDto {
+    pub id: ActionIdDto,
     pub enabled: bool,
-    pub profile_id: ProfileIdDto,
-    pub steps: Vec<ActionSpecDto>,
+    pub profile_id_override: Option<ProfileIdDto>,
+    pub spec: ActionSpecDto,
+    pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(rename = "Folder")]
+pub struct FolderDto {
+    pub id: FolderIdDto,
+    pub source: String,
+    pub listed: bool,
+    pub enabled: bool,
+    pub default_profile_id: ProfileIdDto,
+    pub actions: Vec<FolderActionDto>,
     pub extensions: BTreeMap<String, Value>,
 }
 
@@ -131,7 +155,7 @@ pub struct TaskDto {
 pub struct PlanDto {
     pub version: u16,
     pub name: String,
-    pub tasks: Vec<TaskDto>,
+    pub folders: Vec<FolderDto>,
     pub extensions: BTreeMap<String, Value>,
 }
 
@@ -150,6 +174,14 @@ pub enum AppearanceDto {
     System,
     Light,
     Dark,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename = "BrowserView", rename_all = "snake_case")]
+pub enum BrowserViewDto {
+    Tree,
+    List,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -191,6 +223,15 @@ pub struct HistorySettingsDto {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(rename = "BrowserSettings")]
+pub struct BrowserSettingsDto {
+    pub favorites: Vec<String>,
+    pub recent: Vec<String>,
+    pub view: BrowserViewDto,
+    pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 #[ts(rename = "Settings")]
 pub struct SettingsDto {
     pub version: u16,
@@ -200,6 +241,7 @@ pub struct SettingsDto {
     pub archive_defaults: ArchiveDefaultsDto,
     pub execution: ExecutionSettingsDto,
     pub history: HistorySettingsDto,
+    pub browser: BrowserSettingsDto,
     pub extensions: BTreeMap<String, Value>,
 }
 
@@ -289,7 +331,12 @@ pub enum FileSystemObjectKindDto {
 pub enum BrowserRootKindDto {
     Home,
     FileSystem,
-    Favorite,
+    Documents,
+    Desktop,
+    Downloads,
+    Volumes,
+    SystemPath,
+    Drive,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -312,6 +359,20 @@ pub struct BrowserNodeDto {
     pub is_network_mount: bool,
     pub is_platform_special: bool,
     pub available: bool,
+    /// Decimal Unix milliseconds string to avoid JavaScript integer precision loss.
+    pub modified_at_unix_ms: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[ts(rename = "BrowserSize")]
+pub struct BrowserSizeDto {
+    pub path: String,
+    /// Decimal string to avoid JavaScript integer precision loss.
+    pub logical_bytes: String,
+    pub partial: bool,
+    pub warnings: u64,
+    /// Monotonic correlation ID for the requested directory.
+    pub generation: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -378,8 +439,8 @@ pub struct PreviewPageDto {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
-#[ts(rename = "TaskState", rename_all = "snake_case")]
-pub enum TaskStateDto {
+#[ts(rename = "FolderState", rename_all = "snake_case")]
+pub enum FolderStateDto {
     Ready,
     Invalid,
     Disabled,
@@ -522,7 +583,8 @@ pub enum RunEventKindDto {
 pub struct RunEventDto {
     pub version: u16,
     pub run_id: RunIdDto,
-    pub task_id: TaskIdDto,
+    pub folder_id: FolderIdDto,
+    pub action_id: ActionIdDto,
     pub sequence: String,
     pub occurred_at: String,
     pub event: RunEventKindDto,
@@ -536,11 +598,12 @@ pub enum ValidationCodeDto {
     UnsupportedDocumentVersion,
     EmptyName,
     EmptySource,
-    DuplicateTaskId,
+    DuplicateFolderId,
+    DuplicateActionId,
     DuplicateSource,
-    InvalidStepCount,
     EmptyOutputDirectory,
-    EmptyOutputFilename,
+    InvalidOutputFilename,
+    OutputInsideSource,
     ReservedExtensionField,
     InvalidParallelRuns,
     InvalidRetention,
@@ -591,9 +654,18 @@ pub struct StoredPresetDto {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(rename = "FolderSnapshot")]
+pub struct FolderSnapshotDto {
+    pub id: FolderIdDto,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 #[ts(rename = "RunSnapshot")]
 pub struct RunSnapshotDto {
-    pub task: TaskDto,
+    pub folder: FolderSnapshotDto,
+    pub action: FolderActionDto,
+    pub effective_profile_id: ProfileIdDto,
     pub settings: SettingsDto,
     pub profile_hash: String,
 }
@@ -602,7 +674,8 @@ pub struct RunSnapshotDto {
 #[ts(rename = "RunRecord")]
 pub struct RunRecordDto {
     pub run_id: RunIdDto,
-    pub task_id: TaskIdDto,
+    pub folder_id: FolderIdDto,
+    pub action_id: ActionIdDto,
     pub state: RunStateDto,
     pub started_at: String,
     pub finished_at: Option<String>,
@@ -662,20 +735,29 @@ pub struct BrowserChildrenDto {
     /// Monotonic correlation ID for the requested directory.
     pub generation: String,
     pub nodes: Vec<BrowserNodeDto>,
+    pub total: u64,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 #[ts(rename = "PreviewStarted")]
 pub struct PreviewStartedDto {
-    /// Monotonic correlation ID for the requested task.
+    /// Monotonic correlation ID for the requested folder.
     pub generation: String,
     pub snapshot: PreviewSnapshotDto,
+    pub action: FolderActionDto,
+    pub effective_profile_id: ProfileIdDto,
+    pub effective_profile_name: String,
+    /// Logical bytes in regular files before applying the Ignore Profile.
+    pub raw_bytes: String,
+    pub raw_bytes_partial: bool,
+    pub raw_bytes_warnings: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
-#[ts(rename = "TaskAddResult")]
-pub struct TaskAddResultDto {
-    pub task: TaskDto,
+#[ts(rename = "FolderAddResult")]
+pub struct FolderAddResultDto {
+    pub folder: FolderDto,
     pub created: bool,
 }
 
@@ -747,7 +829,14 @@ impl From<crate::ChecksumAlgorithm> for ChecksumAlgorithmDto {
 impl From<&crate::ArchiveOutputSpec> for ArchiveOutputSpecDto {
     fn from(value: &crate::ArchiveOutputSpec) -> Self {
         Self {
-            directory: value.directory.to_string_lossy().into_owned(),
+            directory: match &value.directory {
+                crate::ArchiveOutputDirectory::Parent => ArchiveOutputDirectoryDto::Parent,
+                crate::ArchiveOutputDirectory::Custom { path } => {
+                    ArchiveOutputDirectoryDto::Custom {
+                        path: path.to_string_lossy().into_owned(),
+                    }
+                }
+            },
             filename: value.filename.clone(),
             format: value.format.into(),
             compression: value.compression.into(),
@@ -799,14 +888,29 @@ impl From<&crate::ActionSpec> for ActionSpecDto {
     }
 }
 
-impl From<&crate::Task> for TaskDto {
-    fn from(value: &crate::Task) -> Self {
+impl From<&crate::FolderAction> for FolderActionDto {
+    fn from(value: &crate::FolderAction) -> Self {
         Self {
-            id: TaskIdDto(value.id.to_string()),
-            source: value.source.to_string_lossy().into_owned(),
+            id: ActionIdDto(value.id.to_string()),
             enabled: value.enabled,
-            profile_id: ProfileIdDto(value.profile_id.to_string()),
-            steps: value.steps.iter().map(Into::into).collect(),
+            profile_id_override: value
+                .profile_id_override
+                .map(|id| ProfileIdDto(id.to_string())),
+            spec: (&value.spec).into(),
+            extensions: value.extensions.clone(),
+        }
+    }
+}
+
+impl From<&crate::Folder> for FolderDto {
+    fn from(value: &crate::Folder) -> Self {
+        Self {
+            id: FolderIdDto(value.id.to_string()),
+            source: value.source.to_string_lossy().into_owned(),
+            listed: value.listed,
+            enabled: value.enabled,
+            default_profile_id: ProfileIdDto(value.default_profile_id.to_string()),
+            actions: value.actions.iter().map(Into::into).collect(),
             extensions: value.extensions.clone(),
         }
     }
@@ -817,7 +921,7 @@ impl From<&crate::Plan> for PlanDto {
         Self {
             version: value.version.0,
             name: value.name.clone(),
-            tasks: value.tasks.iter().map(Into::into).collect(),
+            folders: value.folders.iter().map(Into::into).collect(),
             extensions: value.extensions.clone(),
         }
     }
@@ -841,7 +945,12 @@ impl From<crate::BrowserRootKind> for BrowserRootKindDto {
         match value {
             crate::BrowserRootKind::Home => Self::Home,
             crate::BrowserRootKind::FileSystem => Self::FileSystem,
-            crate::BrowserRootKind::Favorite => Self::Favorite,
+            crate::BrowserRootKind::Documents => Self::Documents,
+            crate::BrowserRootKind::Desktop => Self::Desktop,
+            crate::BrowserRootKind::Downloads => Self::Downloads,
+            crate::BrowserRootKind::Volumes => Self::Volumes,
+            crate::BrowserRootKind::SystemPath => Self::SystemPath,
+            crate::BrowserRootKind::Drive => Self::Drive,
         }
     }
 }
@@ -868,6 +977,7 @@ impl From<&crate::BrowserNode> for BrowserNodeDto {
             is_network_mount: value.is_network_mount,
             is_platform_special: value.is_platform_special,
             available: value.available,
+            modified_at_unix_ms: value.modified_at_unix_ms.map(|value| value.to_string()),
         }
     }
 }
@@ -953,6 +1063,24 @@ impl From<crate::Appearance> for AppearanceDto {
     }
 }
 
+impl From<crate::BrowserView> for BrowserViewDto {
+    fn from(value: crate::BrowserView) -> Self {
+        match value {
+            crate::BrowserView::Tree => Self::Tree,
+            crate::BrowserView::List => Self::List,
+        }
+    }
+}
+
+impl From<BrowserViewDto> for crate::BrowserView {
+    fn from(value: BrowserViewDto) -> Self {
+        match value {
+            BrowserViewDto::Tree => Self::Tree,
+            BrowserViewDto::List => Self::List,
+        }
+    }
+}
+
 impl From<&crate::ArchiveDefaults> for ArchiveDefaultsDto {
     fn from(value: &crate::ArchiveDefaults) -> Self {
         Self {
@@ -998,6 +1126,22 @@ impl From<&crate::Settings> for SettingsDto {
                 runs: (&value.history.runs).into(),
                 logs: (&value.history.logs).into(),
                 extensions: value.history.extensions.clone(),
+            },
+            browser: BrowserSettingsDto {
+                favorites: value
+                    .browser
+                    .favorites
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect(),
+                recent: value
+                    .browser
+                    .recent
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect(),
+                view: value.browser.view.into(),
+                extensions: value.browser.extensions.clone(),
             },
             extensions: value.extensions.clone(),
         }
@@ -1094,12 +1238,12 @@ impl From<&crate::MatchResult> for MatchResultDto {
     }
 }
 
-impl From<crate::TaskState> for TaskStateDto {
-    fn from(value: crate::TaskState) -> Self {
+impl From<crate::FolderState> for FolderStateDto {
+    fn from(value: crate::FolderState) -> Self {
         match value {
-            crate::TaskState::Ready => Self::Ready,
-            crate::TaskState::Invalid => Self::Invalid,
-            crate::TaskState::Disabled => Self::Disabled,
+            crate::FolderState::Ready => Self::Ready,
+            crate::FolderState::Invalid => Self::Invalid,
+            crate::FolderState::Disabled => Self::Disabled,
         }
     }
 }
@@ -1220,7 +1364,8 @@ impl From<&crate::RunEvent> for RunEventDto {
         Self {
             version: value.version,
             run_id: RunIdDto(value.run_id.to_string()),
-            task_id: TaskIdDto(value.task_id.to_string()),
+            folder_id: FolderIdDto(value.folder_id.to_string()),
+            action_id: ActionIdDto(value.action_id.to_string()),
             sequence: value.sequence.to_string(),
             occurred_at: value.occurred_at.to_string(),
             event: (&value.event).into(),
@@ -1292,11 +1437,12 @@ fn validation_code(code: crate::ValidationCode) -> ValidationCodeDto {
         }
         crate::ValidationCode::EmptyName => ValidationCodeDto::EmptyName,
         crate::ValidationCode::EmptySource => ValidationCodeDto::EmptySource,
-        crate::ValidationCode::DuplicateTaskId => ValidationCodeDto::DuplicateTaskId,
+        crate::ValidationCode::DuplicateFolderId => ValidationCodeDto::DuplicateFolderId,
+        crate::ValidationCode::DuplicateActionId => ValidationCodeDto::DuplicateActionId,
         crate::ValidationCode::DuplicateSource => ValidationCodeDto::DuplicateSource,
-        crate::ValidationCode::InvalidStepCount => ValidationCodeDto::InvalidStepCount,
         crate::ValidationCode::EmptyOutputDirectory => ValidationCodeDto::EmptyOutputDirectory,
-        crate::ValidationCode::EmptyOutputFilename => ValidationCodeDto::EmptyOutputFilename,
+        crate::ValidationCode::InvalidOutputFilename => ValidationCodeDto::InvalidOutputFilename,
+        crate::ValidationCode::OutputInsideSource => ValidationCodeDto::OutputInsideSource,
         crate::ValidationCode::ReservedExtensionField => ValidationCodeDto::ReservedExtensionField,
         crate::ValidationCode::InvalidParallelRuns => ValidationCodeDto::InvalidParallelRuns,
         crate::ValidationCode::InvalidRetention => ValidationCodeDto::InvalidRetention,
@@ -1344,10 +1490,21 @@ impl From<&crate::StoredPreset> for StoredPresetDto {
     }
 }
 
+impl From<&crate::FolderSnapshot> for FolderSnapshotDto {
+    fn from(value: &crate::FolderSnapshot) -> Self {
+        Self {
+            id: FolderIdDto(value.id.to_string()),
+            source: value.source.to_string_lossy().into_owned(),
+        }
+    }
+}
+
 impl From<&crate::RunSnapshot> for RunSnapshotDto {
     fn from(value: &crate::RunSnapshot) -> Self {
         Self {
-            task: (&value.task).into(),
+            folder: (&value.folder).into(),
+            action: (&value.action).into(),
+            effective_profile_id: ProfileIdDto(value.effective_profile_id.to_string()),
             settings: (&value.settings).into(),
             profile_hash: value.profile_hash.clone(),
         }
@@ -1358,7 +1515,8 @@ impl From<&crate::RunRecord> for RunRecordDto {
     fn from(value: &crate::RunRecord) -> Self {
         Self {
             run_id: RunIdDto(value.run_id.to_string()),
-            task_id: TaskIdDto(value.task_id.to_string()),
+            folder_id: FolderIdDto(value.folder_id.to_string()),
+            action_id: ActionIdDto(value.action_id.to_string()),
             state: value.state.into(),
             started_at: value.started_at.to_string(),
             finished_at: value.finished_at.map(|timestamp| timestamp.to_string()),
@@ -1432,6 +1590,22 @@ impl TryFrom<SettingsDto> for crate::Settings {
                 logs: retention_from_dto(value.history.logs),
                 extensions: value.history.extensions,
             },
+            browser: crate::BrowserSettings {
+                favorites: value
+                    .browser
+                    .favorites
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect(),
+                recent: value
+                    .browser
+                    .recent
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect(),
+                view: value.browser.view.into(),
+                extensions: value.browser.extensions,
+            },
             extensions: value.extensions,
         })
     }
@@ -1444,8 +1618,8 @@ impl TryFrom<PlanDto> for crate::Plan {
         Ok(Self {
             version: crate::PlanVersion(value.version),
             name: value.name,
-            tasks: value
-                .tasks
+            folders: value
+                .folders
                 .into_iter()
                 .map(TryInto::try_into)
                 .collect::<Result<_, _>>()?,
@@ -1454,20 +1628,38 @@ impl TryFrom<PlanDto> for crate::Plan {
     }
 }
 
-impl TryFrom<TaskDto> for crate::Task {
+impl TryFrom<FolderDto> for crate::Folder {
     type Error = String;
 
-    fn try_from(value: TaskDto) -> Result<Self, Self::Error> {
+    fn try_from(value: FolderDto) -> Result<Self, Self::Error> {
         Ok(Self {
-            id: parse_id("task", &value.id.0)?,
+            id: parse_id("folder", &value.id.0)?,
             source: PathBuf::from(value.source),
+            listed: value.listed,
             enabled: value.enabled,
-            profile_id: parse_id("profile", &value.profile_id.0)?,
-            steps: value
-                .steps
+            default_profile_id: parse_id("profile", &value.default_profile_id.0)?,
+            actions: value
+                .actions
                 .into_iter()
                 .map(TryInto::try_into)
                 .collect::<Result<_, _>>()?,
+            extensions: value.extensions,
+        })
+    }
+}
+
+impl TryFrom<FolderActionDto> for crate::FolderAction {
+    type Error = String;
+
+    fn try_from(value: FolderActionDto) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: parse_id("action", &value.id.0)?,
+            enabled: value.enabled,
+            profile_id_override: value
+                .profile_id_override
+                .map(|id| parse_id("profile", &id.0))
+                .transpose()?,
+            spec: value.spec.try_into()?,
             extensions: value.extensions,
         })
     }
@@ -1511,7 +1703,14 @@ impl From<ArchiveActionSpecDto> for crate::ArchiveActionSpec {
         Self {
             version: crate::ActionVersion(value.version),
             output: crate::ArchiveOutputSpec {
-                directory: PathBuf::from(value.output.directory),
+                directory: match value.output.directory {
+                    ArchiveOutputDirectoryDto::Parent => crate::ArchiveOutputDirectory::Parent,
+                    ArchiveOutputDirectoryDto::Custom { path } => {
+                        crate::ArchiveOutputDirectory::Custom {
+                            path: PathBuf::from(path),
+                        }
+                    }
+                },
                 filename: value.output.filename,
                 format: value.output.format.into(),
                 compression: value.output.compression.into(),
@@ -1626,7 +1825,8 @@ pub fn typescript_bindings() -> String {
 
     declaration!(ProfileIdDto);
     declaration!(PresetIdDto);
-    declaration!(TaskIdDto);
+    declaration!(FolderIdDto);
+    declaration!(ActionIdDto);
     declaration!(RunIdDto);
     declaration!(ArchiveFormatDto);
     declaration!(CompressionLevelDto);
@@ -1634,18 +1834,22 @@ pub fn typescript_bindings() -> String {
     declaration!(UnreadablePolicyDto);
     declaration!(VerificationModeDto);
     declaration!(ChecksumAlgorithmDto);
+    declaration!(ArchiveOutputDirectoryDto);
     declaration!(ArchiveOutputSpecDto);
     declaration!(VerificationSpecDto);
     declaration!(ArchiveActionSpecDto);
     declaration!(ActionSpecDto);
-    declaration!(TaskDto);
+    declaration!(FolderActionDto);
+    declaration!(FolderDto);
     declaration!(PlanDto);
     declaration!(LocaleDto);
     declaration!(AppearanceDto);
+    declaration!(BrowserViewDto);
     declaration!(ArchiveDefaultsDto);
     declaration!(ExecutionSettingsDto);
     declaration!(RetentionPolicyDto);
     declaration!(HistorySettingsDto);
+    declaration!(BrowserSettingsDto);
     declaration!(SettingsDto);
     declaration!(DiagnosticSeverityDto);
     declaration!(DiagnosticCodeDto);
@@ -1658,13 +1862,14 @@ pub fn typescript_bindings() -> String {
     declaration!(BrowserRootKindDto);
     declaration!(BrowserRootDto);
     declaration!(BrowserNodeDto);
+    declaration!(BrowserSizeDto);
     declaration!(ScanDispositionDto);
     declaration!(PreviewEntryDto);
     declaration!(ScanSummaryDto);
     declaration!(PreviewFilterDto);
     declaration!(PreviewSnapshotDto);
     declaration!(PreviewPageDto);
-    declaration!(TaskStateDto);
+    declaration!(FolderStateDto);
     declaration!(RunStateDto);
     declaration!(ProgressPhaseDto);
     declaration!(ProgressSnapshotDto);
@@ -1683,6 +1888,7 @@ pub fn typescript_bindings() -> String {
     declaration!(ExecutionBlockerDto);
     declaration!(StoredProfileDto);
     declaration!(StoredPresetDto);
+    declaration!(FolderSnapshotDto);
     declaration!(RunSnapshotDto);
     declaration!(RunRecordDto);
     declaration!(LogLevelDto);
@@ -1691,10 +1897,15 @@ pub fn typescript_bindings() -> String {
     declaration!(BootstrapSnapshotDto);
     declaration!(BrowserChildrenDto);
     declaration!(PreviewStartedDto);
-    declaration!(TaskAddResultDto);
+    declaration!(FolderAddResultDto);
     declaration!(IpcErrorDto);
 
     output
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }
 
 #[cfg(test)]
@@ -1730,7 +1941,7 @@ mod tests {
         let plan = Plan {
             version: PlanVersion::CURRENT,
             name: "Active plan".into(),
-            tasks: Vec::new(),
+            folders: Vec::new(),
             extensions: Extensions::new(),
         };
         let restored = Plan::try_from(PlanDto::from(&plan)).expect("plan input");

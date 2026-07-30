@@ -14,10 +14,13 @@ mod profile;
 mod writer;
 
 pub use archive::{
-    ActionVersion, ArchiveActionSpec, ArchiveFormat, ArchiveOutputSpec, ChecksumAlgorithm,
-    CompressionLevel, ConflictPolicy, UnreadablePolicy, VerificationMode, VerificationSpec,
+    ActionVersion, ArchiveActionSpec, ArchiveFormat, ArchiveOutputDirectory, ArchiveOutputSpec,
+    ChecksumAlgorithm, CompressionLevel, ConflictPolicy, UnreadablePolicy, VerificationMode,
+    VerificationSpec,
 };
-pub use browser::{BrowserError, BrowserNode, BrowserRoot, BrowserRootKind, FileSystemBrowser};
+pub use browser::{
+    BrowserError, BrowserNode, BrowserRoot, BrowserRootKind, BrowserSize, FileSystemBrowser,
+};
 pub use diagnostics::{
     DiagnosticCode, DiagnosticSeverity, ParserDiagnostic, SourceLocation, SourceSpan,
 };
@@ -30,7 +33,7 @@ pub use filesystem::{
     FileSystemScanner, ScanDisposition, ScanError, ScanNotice, ScanNoticeCode, ScanSink,
     ScanSinkError, ScanSummary, ScannedEntry, detect_case_sensitivity,
 };
-pub use ids::{IdParseError, PresetId, PresetIdParseError, ProfileId, RunId, TaskId};
+pub use ids::{ActionId, FolderId, IdParseError, PresetId, PresetIdParseError, ProfileId, RunId};
 pub use matcher::{
     CompiledProfile, FileSystemCaseSensitivity, MatchPathError, normalize_relative_path,
 };

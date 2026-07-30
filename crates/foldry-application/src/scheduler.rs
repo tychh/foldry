@@ -54,7 +54,6 @@ pub struct SchedulerPorts {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SchedulerError {
     InvalidLimit,
-    DuplicateRun(RunId),
     RunNotFound(RunId),
     InvalidInitialState(RunState),
     InvalidTransition { from: RunState, to: RunState },
@@ -69,7 +68,6 @@ impl fmt::Display for SchedulerError {
             Self::InvalidLimit => {
                 formatter.write_str("scheduler parallelism must be between 1 and 64")
             }
-            Self::DuplicateRun(run_id) => write!(formatter, "run {run_id} is already scheduled"),
             Self::RunNotFound(run_id) => write!(formatter, "run {run_id} is not scheduled"),
             Self::InvalidInitialState(state) => {
                 write!(
@@ -174,7 +172,7 @@ impl Scheduler {
                 return Err(SchedulerError::Unavailable);
             }
             if state.runs.contains_key(&run_id) {
-                return Err(SchedulerError::DuplicateRun(run_id));
+                return Ok(());
             }
             let mut managed = ManagedRun {
                 record: run,
@@ -274,11 +272,16 @@ impl Scheduler {
     }
 
     pub fn stop_all(&self) -> Result<u64, SchedulerError> {
+        {
+            let mut state = self.inner.lock_state()?;
+            state.globally_paused = false;
+        }
         let run_ids = self.non_terminal_run_ids()?;
         let mut changed = 0;
         for run_id in run_ids {
             changed += u64::from(self.stop(run_id)?);
         }
+        self.inner.wake.notify_all();
         Ok(changed)
     }
 
@@ -359,6 +362,9 @@ impl Scheduler {
                 ));
             }
             self.inner.ports.history.update(&managed.record)?;
+            if state.runs.values().all(|run| is_terminal(run.record.state)) {
+                state.globally_paused = false;
+            }
             (events, notify)
         };
         for event in events {
@@ -608,6 +614,9 @@ fn finish_run(inner: &Arc<SchedulerInner>, run_id: RunId, mut summary: ResultSum
             state.background_error = Some(error.to_string());
         }
         state.active_slots = state.active_slots.saturating_sub(1);
+        if state.runs.values().all(|run| is_terminal(run.record.state)) {
+            state.globally_paused = false;
+        }
         inner.wake.notify_all();
         (state_event, completed_event)
     };
@@ -737,7 +746,8 @@ fn next_event(run: &mut ManagedRun, occurred_at: jiff::Timestamp, event: RunEven
     RunEvent {
         version: 1,
         run_id: run.record.run_id,
-        task_id: run.record.task_id,
+        folder_id: run.record.folder_id,
+        action_id: run.record.action_id,
         sequence,
         occurred_at,
         event,

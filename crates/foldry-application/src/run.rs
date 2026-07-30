@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
-use foldry_core::{Extensions, RunId, TaskId};
+use foldry_core::{ActionId, Extensions, FolderId, RunId};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-/// Configuration-time task readiness.
+/// Configuration-time folder readiness.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TaskState {
+pub enum FolderState {
     Ready,
     Invalid,
     Disabled,
@@ -153,7 +153,8 @@ pub enum RunEventKind {
 pub struct RunEvent {
     pub version: u16,
     pub run_id: RunId,
-    pub task_id: TaskId,
+    pub folder_id: FolderId,
+    pub action_id: ActionId,
     pub sequence: u64,
     pub occurred_at: Timestamp,
     pub event: RunEventKind,
@@ -170,7 +171,8 @@ mod tests {
         let event = RunEvent {
             version: 1,
             run_id: RunId::new(),
-            task_id: TaskId::new(),
+            folder_id: FolderId::new(),
+            action_id: ActionId::new(),
             sequence: 7,
             occurred_at: "2026-07-27T00:00:00Z".parse().unwrap(),
             event: RunEventKind::StateChanged {

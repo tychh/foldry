@@ -1,11 +1,11 @@
 use std::{collections::BTreeMap, fs, path::PathBuf, time::UNIX_EPOCH};
 
 use foldry_core::{
-    ActionVersion, ArchiveActionSpec, ArchiveFormat, ArchiveOutputSpec, ChecksumAlgorithm,
-    CompressionLevel, ConflictPolicy, ExecutionControl, ExecutionEntrySource, ExecutionPlan,
-    ExecutionWarning, FileSystemObjectKind, PlanOutput, RunId, ScanDisposition, ScanSummary,
-    ScannedEntry, UnreadablePolicy, VerificationMode, VerificationSpec, execute_archive,
-    reserve_output,
+    ActionVersion, ArchiveActionSpec, ArchiveFormat, ArchiveOutputDirectory, ArchiveOutputSpec,
+    ChecksumAlgorithm, CompressionLevel, ConflictPolicy, ExecutionControl, ExecutionEntrySource,
+    ExecutionPlan, ExecutionWarning, FileSystemObjectKind, PlanOutput, RunId, ScanDisposition,
+    ScanSummary, ScannedEntry, UnreadablePolicy, VerificationMode, VerificationSpec,
+    execute_archive, reserve_output,
 };
 
 struct Entries(std::vec::IntoIter<ScannedEntry>);
@@ -24,7 +24,9 @@ fn action(
     ArchiveActionSpec {
         version: ActionVersion::V1,
         output: ArchiveOutputSpec {
-            directory: output.to_path_buf(),
+            directory: ArchiveOutputDirectory::Custom {
+                path: output.to_path_buf(),
+            },
             filename: "backup".to_owned(),
             format,
             compression: CompressionLevel::Fast,
@@ -130,7 +132,10 @@ fn stop_removes_temp_and_reservation_without_publishing() {
     control.stop();
 
     assert!(execute_archive(&plan, reservation, &mut entries, &control, |_| {}).is_err());
-    assert_eq!(final_path, expected_target);
+    assert_eq!(
+        final_path,
+        expected_target.canonicalize().expect("canonical target")
+    );
     assert_eq!(
         fs::read_to_string(final_path).expect("old archive remains"),
         "old archive"
@@ -194,45 +199,15 @@ fn warn_and_skip_publishes_remaining_files_with_a_typed_warning() {
 }
 
 #[test]
-fn output_inside_source_is_excluded_and_include_root_false_flattens_layout() {
+fn output_inside_source_is_rejected_before_reservation() {
     let source = tempfile::tempdir().expect("source");
-    let good_path = source.path().join("good.txt");
-    let old_output = source.path().join("backup.zip");
-    fs::write(&good_path, "good").expect("good file");
-    fs::write(&old_output, "old archive").expect("old output");
-    let mut action = action(source.path(), ArchiveFormat::Zip, UnreadablePolicy::Fail);
-    action.include_root = false;
-    let PlanOutput::Reserved(reservation) =
-        reserve_output(source.path(), &action.output, RunId::new()).expect("reservation")
-    else {
-        panic!("must reserve");
-    };
-    let mut entries = Entries(
-        vec![
-            scanned_file(good_path, "good.txt"),
-            scanned_file(old_output, "backup.zip"),
-        ]
-        .into_iter(),
-    );
-    let plan = ExecutionPlan {
-        source_root: source.path().to_path_buf(),
-        action,
-        totals: ScanSummary::default(),
-    };
+    let action = action(source.path(), ArchiveFormat::Zip, UnreadablePolicy::Fail);
+    let error = reserve_output(source.path(), &action.output, RunId::new()).unwrap_err();
 
-    let result = execute_archive(
-        &plan,
-        reservation,
-        &mut entries,
-        &ExecutionControl::default(),
-        |_| {},
-    )
-    .expect("execution");
-    let mut archive =
-        zip::ZipArchive::new(fs::File::open(result.output_path).expect("archive")).expect("ZIP");
-
-    assert!(archive.by_name("good.txt").is_ok());
-    assert!(archive.by_name("backup.zip").is_err());
+    assert!(matches!(
+        error,
+        foldry_core::OutputPlanError::OutputInsideSource(_)
+    ));
 }
 
 #[test]

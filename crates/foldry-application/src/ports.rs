@@ -4,9 +4,11 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ParserDiagnostic, Plan, PresetId, ProfileId, ResultSummary, RunId, RunState, Settings, Task,
-    TaskId,
+    ActionId, FolderAction, FolderId, ParserDiagnostic, Plan, PresetId, ProfileId, ResultSummary,
+    RunId, RunState, Settings,
 };
+
+pub const DEFAULT_PROFILE_FILENAME: &str = "default.packignore";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepositoryError {
@@ -49,8 +51,16 @@ pub struct StoredPreset {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct FolderSnapshot {
+    pub id: FolderId,
+    pub source: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RunSnapshot {
-    pub task: Task,
+    pub folder: FolderSnapshot,
+    pub action: FolderAction,
+    pub effective_profile_id: ProfileId,
     pub settings: Settings,
     pub profile_text: String,
     pub profile_hash: String,
@@ -59,7 +69,8 @@ pub struct RunSnapshot {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RunRecord {
     pub run_id: RunId,
-    pub task_id: TaskId,
+    pub folder_id: FolderId,
+    pub action_id: ActionId,
     pub state: RunState,
     pub started_at: Timestamp,
     pub finished_at: Option<Timestamp>,
@@ -122,7 +133,24 @@ pub trait RunHistoryRepository: Send + Sync {
     fn insert(&self, run: &RunRecord) -> Result<(), RepositoryError>;
     fn update(&self, run: &RunRecord) -> Result<(), RepositoryError>;
     fn get(&self, run_id: RunId) -> Result<Option<RunRecord>, RepositoryError>;
-    fn page(&self, page: PageRequest) -> Result<Vec<RunRecord>, RepositoryError>;
+    fn page_filtered(
+        &self,
+        page: PageRequest,
+        folder_id: Option<FolderId>,
+        action_id: Option<ActionId>,
+    ) -> Result<Vec<RunRecord>, RepositoryError>;
+    fn page(&self, page: PageRequest) -> Result<Vec<RunRecord>, RepositoryError> {
+        self.page_filtered(page, None, None)
+    }
+    fn non_terminal_for_folder(
+        &self,
+        folder_id: FolderId,
+    ) -> Result<Vec<RunRecord>, RepositoryError>;
+    fn non_terminal_for_action(
+        &self,
+        folder_id: FolderId,
+        action_id: ActionId,
+    ) -> Result<Vec<RunRecord>, RepositoryError>;
     fn mark_unfinished_interrupted(&self, at: Timestamp) -> Result<u64, RepositoryError>;
     fn apply_retention(
         &self,
@@ -151,6 +179,7 @@ pub trait Clock: Send + Sync {
 
 pub trait IdGenerator: Send + Sync {
     fn run_id(&self) -> RunId;
-    fn task_id(&self) -> TaskId;
+    fn folder_id(&self) -> FolderId;
+    fn action_id(&self) -> ActionId;
     fn profile_id(&self) -> ProfileId;
 }

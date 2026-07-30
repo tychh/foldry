@@ -1,8 +1,25 @@
 # @preset-id os-metadata
-# @preset-version 1
+# @preset-version 2
 # @preset-name OS metadata
-# @preset-description Finder and Explorer metadata files.
+# @preset-description Disposable metadata, indexes, trash, and filesystem artifacts created by macOS, Windows, and Linux.
 # @preset-safety safe
 
 .DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100/
+.Trashes/
+
 Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.stackdump
+
+.directory
+.Trash-*/
+.fuse_hidden*
+.nfs*

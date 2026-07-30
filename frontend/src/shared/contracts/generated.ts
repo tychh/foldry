@@ -6,7 +6,9 @@ export type ProfileId = string;
 
 export type PresetId = string;
 
-export type TaskId = string;
+export type FolderId = string;
+
+export type ActionId = string;
 
 export type RunId = string;
 
@@ -22,7 +24,9 @@ export type VerificationMode = "structural" | "full";
 
 export type ChecksumAlgorithm = "none" | "sha256";
 
-export type ArchiveOutputSpec = { directory: string, filename: string, format: ArchiveFormat, compression: CompressionLevel, conflict_policy: ConflictPolicy, extensions: { [key in string]: JsonValue }, };
+export type ArchiveOutputDirectory = { "mode": "parent" } | { "mode": "custom", path: string, };
+
+export type ArchiveOutputSpec = { directory: ArchiveOutputDirectory, filename: string, format: ArchiveFormat, compression: CompressionLevel, conflict_policy: ConflictPolicy, extensions: { [key in string]: JsonValue }, };
 
 export type VerificationSpec = { mode: VerificationMode, checksum: ChecksumAlgorithm, extensions: { [key in string]: JsonValue }, };
 
@@ -30,13 +34,17 @@ export type ArchiveActionSpec = { version: number, output: ArchiveOutputSpec, in
 
 export type ActionSpec = { action_type: string, version: number | null, archive: ArchiveActionSpec | null, fields: { [key in string]: JsonValue }, };
 
-export type Task = { id: TaskId, source: string, enabled: boolean, profile_id: ProfileId, steps: Array<ActionSpec>, extensions: { [key in string]: JsonValue }, };
+export type FolderAction = { id: ActionId, enabled: boolean, profile_id_override: ProfileId | null, spec: ActionSpec, extensions: { [key in string]: JsonValue }, };
 
-export type Plan = { version: number, name: string, tasks: Array<Task>, extensions: { [key in string]: JsonValue }, };
+export type Folder = { id: FolderId, source: string, listed: boolean, enabled: boolean, default_profile_id: ProfileId, actions: Array<FolderAction>, extensions: { [key in string]: JsonValue }, };
+
+export type Plan = { version: number, name: string, folders: Array<Folder>, extensions: { [key in string]: JsonValue }, };
 
 export type Locale = "en" | "ru";
 
 export type Appearance = "system" | "light" | "dark";
+
+export type BrowserView = "tree" | "list";
 
 export type ArchiveDefaults = { output_directory: string, format: ArchiveFormat, compression: CompressionLevel, conflict_policy: ConflictPolicy, include_root: boolean, unreadable_policy: UnreadablePolicy, verification_mode: VerificationMode, checksum: ChecksumAlgorithm, extensions: { [key in string]: JsonValue }, };
 
@@ -46,7 +54,9 @@ export type RetentionPolicy = { unlimited: boolean, max_age_days: number, max_en
 
 export type HistorySettings = { runs: RetentionPolicy, logs: RetentionPolicy, extensions: { [key in string]: JsonValue }, };
 
-export type Settings = { version: number, locale: Locale, appearance: Appearance, default_profile_id: ProfileId | null, archive_defaults: ArchiveDefaults, execution: ExecutionSettings, history: HistorySettings, extensions: { [key in string]: JsonValue }, };
+export type BrowserSettings = { favorites: Array<string>, recent: Array<string>, view: BrowserView, extensions: { [key in string]: JsonValue }, };
+
+export type Settings = { version: number, locale: Locale, appearance: Appearance, default_profile_id: ProfileId | null, archive_defaults: ArchiveDefaults, execution: ExecutionSettings, history: HistorySettings, browser: BrowserSettings, extensions: { [key in string]: JsonValue }, };
 
 export type DiagnosticSeverity = "error" | "warning";
 
@@ -64,15 +74,29 @@ export type MatchResult = { path: string, decision: MatchDecision, reason: Match
 
 export type FileSystemObjectKind = "directory" | "regular_file" | "symlink" | "junction_or_reparse_point" | "special_file" | "unreadable";
 
-export type BrowserRootKind = "home" | "file_system" | "favorite";
+export type BrowserRootKind = "home" | "file_system" | "documents" | "desktop" | "downloads" | "volumes" | "system_path" | "drive";
 
 export type BrowserRoot = { id: string, path: string, name: string, kind: BrowserRootKind, };
 
-export type BrowserNode = { id: string, path: string, name: string, kind: FileSystemObjectKind, is_mount_point: boolean, is_network_mount: boolean, is_platform_special: boolean, available: boolean, };
+export type BrowserNode = { id: string, path: string, name: string, kind: FileSystemObjectKind, is_mount_point: boolean, is_network_mount: boolean, is_platform_special: boolean, available: boolean,
+/**
+ * Decimal Unix milliseconds string to avoid JavaScript integer precision loss.
+ */
+modified_at_unix_ms: string | null, };
+
+export type BrowserSize = { path: string,
+/**
+ * Decimal string to avoid JavaScript integer precision loss.
+ */
+logical_bytes: string, partial: boolean, warnings: bigint,
+/**
+ * Monotonic correlation ID for the requested directory.
+ */
+generation: string, };
 
 export type ScanDisposition = "included" | "excluded" | "skipped";
 
-export type PreviewEntry = { relative_path: string, kind: FileSystemObjectKind, disposition: ScanDisposition, 
+export type PreviewEntry = { relative_path: string, kind: FileSystemObjectKind, disposition: ScanDisposition,
 /**
  * Decimal string to avoid JavaScript integer precision loss.
  */
@@ -86,25 +110,25 @@ export type PreviewSnapshot = { preview_id: string, created_at: string, profile_
 
 export type PreviewPage = { entries: Array<PreviewEntry>, next_cursor: string | null, };
 
-export type TaskState = "ready" | "invalid" | "disabled";
+export type FolderState = "ready" | "invalid" | "disabled";
 
 export type RunState = "queued" | "planning" | "running" | "paused" | "stopping" | "succeeded" | "succeeded_with_warnings" | "failed" | "stopped" | "interrupted";
 
 export type ProgressPhase = "planning" | "archiving" | "verifying" | "publishing";
 
-export type ProgressSnapshot = { phase: ProgressPhase, 
+export type ProgressSnapshot = { phase: ProgressPhase,
 /**
  * Decimal string to avoid JavaScript integer precision loss.
  */
-completed_entries: string, 
+completed_entries: string,
 /**
  * Decimal string to avoid JavaScript integer precision loss.
  */
-total_entries: string | null, 
+total_entries: string | null,
 /**
  * Decimal string to avoid JavaScript integer precision loss.
  */
-completed_bytes: string, 
+completed_bytes: string,
 /**
  * Decimal string to avoid JavaScript integer precision loss.
  */
@@ -118,7 +142,7 @@ export type FoldryWarning = { code: WarningCode, message: string, path: string |
 
 export type FoldryError = { code: ErrorCode, message: string, retryable: boolean, path: string | null, extensions: { [key in string]: JsonValue }, };
 
-export type ArchiveArtifact = { path: string, 
+export type ArchiveArtifact = { path: string,
 /**
  * Decimal string to avoid JavaScript integer precision loss.
  */
@@ -130,9 +154,9 @@ export type ResultSummary = { outcome: RunOutcome, included_entries: string, ski
 
 export type RunEventKind = { "type": "state_changed", state: RunState, } | { "type": "progress", progress: ProgressSnapshot, } | { "type": "warning", warning: FoldryWarning, } | { "type": "error", error: FoldryError, } | { "type": "completed", summary: ResultSummary, };
 
-export type RunEvent = { version: number, run_id: RunId, task_id: TaskId, sequence: string, occurred_at: string, event: RunEventKind, extensions: { [key in string]: JsonValue }, };
+export type RunEvent = { version: number, run_id: RunId, folder_id: FolderId, action_id: ActionId, sequence: string, occurred_at: string, event: RunEventKind, extensions: { [key in string]: JsonValue }, };
 
-export type ValidationCode = "unsupported_document_version" | "empty_name" | "empty_source" | "duplicate_task_id" | "duplicate_source" | "invalid_step_count" | "empty_output_directory" | "empty_output_filename" | "reserved_extension_field" | "invalid_parallel_runs" | "invalid_retention";
+export type ValidationCode = "unsupported_document_version" | "empty_name" | "empty_source" | "duplicate_folder_id" | "duplicate_action_id" | "duplicate_source" | "empty_output_directory" | "invalid_output_filename" | "output_inside_source" | "reserved_extension_field" | "invalid_parallel_runs" | "invalid_retention";
 
 export type ValidationIssue = { code: ValidationCode, path: string, message: string, };
 
@@ -144,13 +168,15 @@ export type StoredProfile = { id: ProfileId | null, filename: string, name: stri
 
 export type StoredPreset = { id: PresetId, filename: string, text: string, resource_version: number | null, };
 
-export type RunSnapshot = { task: Task, settings: Settings, profile_hash: string, };
+export type FolderSnapshot = { id: FolderId, source: string, };
 
-export type RunRecord = { run_id: RunId, task_id: TaskId, state: RunState, started_at: string, finished_at: string | null, snapshot: RunSnapshot, summary: ResultSummary | null, };
+export type RunSnapshot = { folder: FolderSnapshot, action: FolderAction, effective_profile_id: ProfileId, settings: Settings, profile_hash: string, };
+
+export type RunRecord = { run_id: RunId, folder_id: FolderId, action_id: ActionId, state: RunState, started_at: string, finished_at: string | null, snapshot: RunSnapshot, summary: ResultSummary | null, };
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error";
 
-export type LogRecord = { run_id: RunId, 
+export type LogRecord = { run_id: RunId,
 /**
  * Decimal string to avoid JavaScript integer precision loss.
  */
@@ -160,19 +186,23 @@ export type StoragePaths = { config: string, data: string, cache: string, };
 
 export type BootstrapSnapshot = { version: number, settings: Settings, plan: Plan, profiles: Array<StoredProfile>, presets: Array<StoredPreset>, active_runs: Array<RunRecord>, recent_runs: Array<RunRecord>, previews: Array<PreviewSnapshot>, roots: Array<BrowserRoot>, storage: StoragePaths, };
 
-export type BrowserChildren = { 
+export type BrowserChildren = {
 /**
  * Monotonic correlation ID for the requested directory.
  */
-generation: string, nodes: Array<BrowserNode>, };
+generation: string, nodes: Array<BrowserNode>, total: bigint, next_cursor: string | null, };
 
-export type PreviewStarted = { 
+export type PreviewStarted = {
 /**
- * Monotonic correlation ID for the requested task.
+ * Monotonic correlation ID for the requested folder.
  */
-generation: string, snapshot: PreviewSnapshot, };
+generation: string, snapshot: PreviewSnapshot, action: FolderAction, effective_profile_id: ProfileId, effective_profile_name: string,
+/**
+ * Logical bytes in regular files before applying the Ignore Profile.
+ */
+raw_bytes: string, raw_bytes_partial: boolean, raw_bytes_warnings: bigint, };
 
-export type TaskAddResult = { task: Task, created: boolean, };
+export type FolderAddResult = { folder: Folder, created: boolean, };
 
 export type IpcError = { code: string, message: string, details: JsonValue | null, };
 

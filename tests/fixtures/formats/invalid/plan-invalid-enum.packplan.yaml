@@ -1,21 +1,27 @@
-version: 1
+version: 2
 name: Invalid plan
-tasks:
+folders:
   - id: 0190f5f0-7f8b-7d80-a120-4f4f9fe95c21
     source: /home/user/projects/example
+    listed: true
     enabled: true
-    profile_id: 0190f5f0-7f8b-7d80-a120-4f4f9fe95c20
-    steps:
-      - type: archive
-        version: 1
-        output:
-          directory: /home/user/Packages
-          filename: example
-          format: rar
-          compression: balanced
-          conflict_policy: increment
-        include_root: true
-        unreadable_policy: fail
-        verification:
-          mode: structural
-          checksum: none
+    default_profile_id: 0190f5f0-7f8b-7d80-a120-4f4f9fe95c20
+    actions:
+      - id: 0190f5f0-7f8b-7d80-a120-4f4f9fe95c22
+        enabled: true
+        profile_id_override: null
+        spec:
+          type: archive
+          version: 1
+          output:
+            directory:
+              mode: parent
+            filename: example
+            format: rar
+            compression: balanced
+            conflict_policy: increment
+          include_root: true
+          unreadable_policy: fail
+          verification:
+            mode: structural
+            checksum: none

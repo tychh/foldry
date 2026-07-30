@@ -22,3 +22,7 @@ history:
     unlimited: false
     max_age_days: 90
     max_entries: 1000
+browser:
+  favorites: []
+  recent: []
+  view: tree

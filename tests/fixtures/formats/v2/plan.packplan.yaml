@@ -1,0 +1,27 @@
+version: 2
+name: Active plan
+folders:
+- id: 0190f5f0-7f8b-7d80-a120-4f4f9fe95c21
+  source: /home/user/projects/example
+  listed: true
+  enabled: true
+  default_profile_id: 0190f5f0-7f8b-7d80-a120-4f4f9fe95c20
+  actions:
+  - id: 0190f5f0-7f8b-7d80-a120-4f4f9fe95c22
+    enabled: false
+    profile_id_override: null
+    spec:
+      type: archive
+      include_root: true
+      output:
+        compression: balanced
+        conflict_policy: increment
+        directory:
+          mode: parent
+        filename: '{folder}.{date}'
+        format: zip
+      unreadable_policy: fail
+      verification:
+        checksum: none
+        mode: structural
+      version: 1

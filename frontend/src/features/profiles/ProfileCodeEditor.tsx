@@ -6,7 +6,6 @@ import {
   ViewPlugin,
   type ViewUpdate,
 } from "@codemirror/view";
-import { useComputedColorScheme } from "@mantine/core";
 import CodeMirror from "@uiw/react-codemirror";
 import { useMemo } from "react";
 
@@ -23,7 +22,6 @@ export function ProfileCodeEditor({
   value,
   onChange,
 }: ProfileCodeEditorProps) {
-  const colorScheme = useComputedColorScheme("light");
   const diagnosticsExtension = useMemo(
     () =>
       linter((view) =>
@@ -45,6 +43,7 @@ export function ProfileCodeEditor({
         highlightActiveLineGutter: true,
         lineNumbers: true,
       }}
+      className="foldry-profile-editor"
       extensions={[
         profileSyntax,
         diagnosticsExtension,
@@ -52,7 +51,7 @@ export function ProfileCodeEditor({
         EditorView.lineWrapping,
       ]}
       height="100%"
-      theme={colorScheme}
+      theme="none"
       value={value}
       onChange={onChange}
     />

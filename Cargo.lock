@@ -1201,7 +1201,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "foldry-application"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "foldry-core",
  "jiff",
@@ -1214,7 +1214,7 @@ dependencies = [
 
 [[package]]
 name = "foldry-cli"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "clap",
  "ctrlc",
@@ -1228,7 +1228,7 @@ dependencies = [
 
 [[package]]
 name = "foldry-core"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "atomicwrites",
  "flate2",
@@ -1247,7 +1247,7 @@ dependencies = [
 
 [[package]]
 name = "foldry-storage"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "atomicwrites",
  "directories",
@@ -1266,7 +1266,7 @@ dependencies = [
 
 [[package]]
 name = "foldry-tauri"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "foldry-application",
  "foldry-storage",
@@ -2117,6 +2117,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
+ "windows-link 0.2.1",
 ]
 
 [[package]]

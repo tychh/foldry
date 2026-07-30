@@ -1,103 +1,178 @@
-# Foldry
+<p align="center">
+  <img src="resources/app-icon.png" width="96" height="96" alt="Foldry application icon">
+</p>
 
-Foldry is a cross-platform desktop application and CLI for packaging folders while
-excluding reproducible runtime and build artifacts through reusable filtering
-profiles.
+<h1 align="center">Foldry</h1>
 
-The core, persistence, scheduler, CLI, and desktop workflows are implemented.
-Release preparation and the remaining native operating-system smoke checks follow
-the [implementation plan](notes/plan.md).
+<p align="center">
+  Prepare folders for safe, repeatable transfer or backup without sending them
+  through a cloud service.
+</p>
 
-## Repository layout
+<p align="center">
+  <a href="https://github.com/tychh/foldry/actions/workflows/ci.yml"><img src="https://github.com/tychh/foldry/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="MIT OR Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/version-0.1.2-2f81f7" alt="Version 0.1.2">
+</p>
 
-```text
-crates/
-├── foldry-core/          Domain core
-├── foldry-application/   Use cases and application ports
-├── foldry-storage/       Storage adapters
-├── foldry-cli/           English CLI executable: foldry
-└── foldry-tauri/         Tauri desktop adapter
-frontend/                 React, TypeScript, Vite, and Mantine
-resources/                Shipped profiles and presets
-tests/fixtures/           Versioned public-format compatibility fixtures
-docs/                     Architecture and acceptance criteria
-notes/                    Product task, decisions, and implementation plan
-```
+Foldry is a local-first desktop application and CLI for processing folders with
+reusable Ignore Profiles. It is useful when a repository, project, or personal
+folder must be moved with files that do not belong in Git or a public cloud, while
+generated output and operating-system clutter should stay behind.
 
-See the [system map](docs/architecture/system-map.md) for dependency rules.
+Version 0.1.2 focuses on verified local archives. Network synchronization is not
+part of this release.
 
-## Prerequisites
+## Why Foldry
 
-The pinned Rust, Node.js, pnpm, and Windows/macOS/Linux system prerequisites are
-listed in [the build and run guide](docs/running.md).
+- **Folders are the primary objects.** Add a folder once, choose its default
+  Ignore Profile, and attach independent actions.
+- **Filtering is explicit.** Preview shows what will be included or excluded and
+  which rule made the decision.
+- **Archives are published safely.** Foldry writes a temporary file, verifies it,
+  and only then replaces or publishes the destination.
+- **Runs are observable.** The queue, progress, warnings, history, logs, and
+  immutable repeat snapshots are available in both the desktop application and
+  CLI.
+- **Your data stays local.** Foldry has no telemetry, cloud client, account system,
+  or remote crash upload.
 
-## Setup
+## Screenshots
+
+### Folders and actions
+
+Manage remembered folders, configure Archive actions, choose Ignore Profiles,
+preview results, and control queued runs from one workspace.
+
+![Foldry Folders workspace](docs/images/folders.png)
+
+### Ignore Profiles
+
+Edit `.packignore` rules with diagnostics and reusable presets. Profiles can be
+shared by many folders while individual actions may override the folder default.
+
+![Foldry Ignore Profiles workspace](docs/images/ignore-profiles.png)
+
+### Preview and history
+
+Inspect included and excluded entries before a run, then review persisted results,
+warnings, logs, and immutable snapshots.
+
+![Foldry Preview workspace](docs/images/preview.png)
+
+## Install
+
+Download the package for your platform from
+[GitHub Releases](https://github.com/tychh/foldry/releases):
+
+- Windows x64: NSIS installer or MSI;
+- macOS Intel or Apple Silicon: architecture-specific DMG;
+- Linux x64: AppImage or Debian package;
+- standalone `foldry` CLI binaries are built from the same source.
+
+Release candidates may initially be unsigned. Read the release notes and your
+operating system's warning before installing. See
+[Platform support](docs/platform-support.md) for the current build and validation
+matrix.
+
+To build Foldry yourself, follow the
+[Getting started guide](docs/getting-started.md).
+
+## First use
+
+1. Open **Add folders** and choose a source folder.
+2. Keep the minimal **Default** Ignore Profile or select another profile.
+3. Configure the Archive action: output, name, format, compression, and
+   verification.
+4. Open **Preview** and review the included and excluded entries.
+5. Run the action. The final archive appears only after writing and verification
+   succeed.
+
+Foldry supports ZIP, TAR.GZ, and TAR.ZST. ZIP is the broadest cross-platform
+choice; TAR.GZ is widely supported on Unix-like systems; TAR.ZST is typically the
+fastest and smallest but may require an external extractor.
+
+## CLI
+
+The CLI uses the same profiles, folders, archive engine, history, and safety
+checks as the desktop application.
+
+Create a one-shot archive without adding the folder to the desktop workspace:
 
 ```bash
-corepack enable
-pnpm install
+foldry archive ./project \
+  --profile Default \
+  --format tar-zst \
+  --compression balanced \
+  --full-verify \
+  --checksum
 ```
+
+Automations can add `--json` to receive one stable versioned JSON object:
+
+```bash
+foldry --json history list --limit 10
+```
+
+See the [CLI guide](docs/cli.md) for command groups, examples, JSON output, and
+exit codes.
+
+## Documentation
+
+| I want to…                      | Read                                                    |
+| ------------------------------- | ------------------------------------------------------- |
+| Install or build Foldry         | [Getting started](docs/getting-started.md)              |
+| Understand the desktop workflow | [User guide](docs/user-guide.md)                        |
+| Write filtering rules           | [Ignore Profiles](docs/ignore-profiles.md)              |
+| Automate Foldry                 | [CLI guide](docs/cli.md)                                |
+| Diagnose a problem              | [Troubleshooting](docs/troubleshooting.md)              |
+| Check platform support          | [Platform support](docs/platform-support.md)            |
+| Report a security issue         | [Security policy](SECURITY.md)                          |
+| Understand the codebase         | [Development documentation](docs/development/README.md) |
+
+The [documentation index](docs/README.md) contains the complete map.
+
+## Feedback
+
+Bug reports, usability feedback, and feature requests are welcome. Foldry is
+currently maintained as a single-author project, so code contributions and pull
+requests are not being accepted.
+
+Please read the [feedback and contribution policy](CONTRIBUTING.md) before opening
+an issue or investing time in an implementation. Security vulnerabilities should
+be reported privately according to the [security policy](SECURITY.md).
 
 ## Development
 
-Run the browser frontend:
+The workspace uses Rust 1.97.1, Node.js 24.18.0, pnpm 11.17.0, React, Mantine,
+Tauri 2, SQLite, and a layered Rust core shared by the desktop and CLI adapters.
 
 ```bash
-pnpm dev
-```
-
-Run the Tauri desktop shell:
-
-```bash
+corepack enable
+pnpm install --frozen-lockfile
+pnpm check
 pnpm desktop:dev
 ```
 
-Run the CLI:
+The [development documentation](docs/development/README.md) describes the
+architecture, contracts, safety constraints, tests, and release process for
+maintainers and people studying or adapting the code.
 
-```bash
-cargo run -p foldry-cli --bin foldry
-```
+## Security and privacy
 
-## Quality commands
+Foldry treats source trees, profile rules, persisted YAML/JSON, and webview input
+as untrusted. It does not follow symlinks while scanning, rejects archive path
+traversal, reserves output names atomically, and keeps an existing archive until a
+replacement has been verified.
 
-```bash
-pnpm format:check
-pnpm lint
-pnpm typecheck
-pnpm contracts:check
-pnpm test
-pnpm build
-pnpm desktop:build
-```
+Foldry does not encrypt its local database. Another process running as the same
+operating-system user remains inside the trust boundary. See the
+[security model](docs/development/security.md) for details and reporting guidance.
 
-Native bundles are written to `target/release/bundle/`; the standalone release CLI
-is built with `cargo build --release -p foldry-cli --bin foldry`.
+## License
 
-Run the complete local gate with:
+Foldry is available under your choice of the [MIT License](LICENSE-MIT) or the
+[Apache License 2.0](LICENSE-APACHE).
 
-```bash
-pnpm check
-```
-
-## Architecture and scope
-
-- [Architecture decisions](docs/architecture/README.md)
-- [Acceptance checklist](docs/acceptance-checklist.md)
-- [Public data formats v1](docs/contracts/formats-v1.md)
-- [`.packignore` syntax v1](docs/contracts/packignore-v1.md)
-- [Rust/TypeScript transport contracts](docs/contracts/transport.md)
-- [Filesystem scanner and preview contract](docs/contracts/scanner-preview.md)
-- [Archive planning and execution v1](docs/contracts/archive-execution-v1.md)
-- [Persistence and recovery v1](docs/contracts/persistence-v1.md)
-- [Scheduler v1](docs/contracts/scheduler-v1.md)
-- [CLI v1](docs/cli.md)
-- [How Foldry works](docs/how-it-works.md)
-- [Build and run guide](docs/running.md)
-- [Troubleshooting and data locations](docs/troubleshooting.md)
-- [Release process](docs/releasing.md)
-- [Cross-platform smoke matrix](notes/multiplatform-smoke.md)
-- [Implementation plan](notes/plan.md)
-- [Open decisions](notes/decisions.md)
-
-Foldry has no telemetry or remote crash upload. Profiles, paths, history, logs, and
-crash reports remain local by contract.
+Created and maintained by [tychh](https://github.com/tychh). If Foldry is useful
+to you, support is welcome on [Ko-fi](https://ko-fi.com/tychh).

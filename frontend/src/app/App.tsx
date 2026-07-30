@@ -12,7 +12,7 @@ import {
 import { ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
 import { lazy, Suspense, useState } from "react";
 
-import { TasksWorkspace } from "../features/tasks/TasksWorkspace";
+import { FoldersWorkspace } from "../features/folders/FoldersWorkspace";
 import {
   DesktopDataProvider,
   useDesktopData,
@@ -31,7 +31,7 @@ const ProfilesWorkspace = lazy(() =>
 function FoldryApplication() {
   const { snapshot, connection, error, preview, reload } = useDesktopData();
   const { t } = useI18n();
-  const [route, setRoute] = useState<AppRoute>("tasks");
+  const [route, setRoute] = useState<AppRoute>("folders");
 
   if (!snapshot && connection === "loading") {
     return <LoadingWorkspace />;
@@ -70,8 +70,8 @@ function FoldryApplication() {
         onRetry={() => void reload()}
         onRouteChange={setRoute}
       />
-      {route === "tasks" ? (
-        <TasksWorkspace snapshot={snapshot} />
+      {route === "folders" ? (
+        <FoldersWorkspace snapshot={snapshot} />
       ) : (
         <Suspense fallback={<LoadingWorkspace />}>
           <ProfilesWorkspace snapshot={snapshot} />

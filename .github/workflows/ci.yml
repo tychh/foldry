@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  LANG: en_US.UTF-8
+  LC_ALL: en_US.UTF-8
+
+jobs:
+  quality-and-native-build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-24.04
+            bundles: deb,appimage
+            artifact-name: foldry-linux-x64
+          - name: macOS Apple Silicon
+            os: macos-15
+            bundles: app,dmg
+            artifact-name: foldry-macos-arm64
+          - name: macOS Intel
+            os: macos-15-intel
+            bundles: app,dmg
+            artifact-name: foldry-macos-x64
+          - name: Windows x64
+            os: windows-2025
+            bundles: msi,nsis
+            artifact-name: foldry-windows-x64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.17.0
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            wget
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run quality gate
+        run: pnpm check
+
+      - name: Build native packages
+        run: >-
+          pnpm exec tauri build
+          --config crates/foldry-tauri/tauri.conf.json
+          --bundles "${{ matrix.bundles }}"
+          --ci
+          --no-sign
+
+      - name: Upload native packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: target/release/bundle/**
+          if-no-files-found: error
+          retention-days: 14

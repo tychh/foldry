@@ -1,112 +1,98 @@
-# Troubleshooting Foldry
+# Troubleshooting
 
-## Find the active files
-
-Run:
+Start with:
 
 ```bash
 foldry config path
+foldry config show
 ```
 
-This is authoritative even when XDG variables or recovery overrides are in use.
-The default layout is:
+These commands show the exact configuration, data, cache, and database locations
+used by the desktop application and CLI.
 
-| Platform | Config                                             | Local data                                         | Cache                                         |
-| -------- | -------------------------------------------------- | -------------------------------------------------- | --------------------------------------------- |
-| Linux    | `$XDG_CONFIG_HOME/foldry` or `~/.config/foldry`    | `$XDG_DATA_HOME/foldry` or `~/.local/share/foldry` | `$XDG_CACHE_HOME/foldry` or `~/.cache/foldry` |
-| Windows  | `%APPDATA%\Foldry\config`                          | `%LOCALAPPDATA%\Foldry\data`                       | `%LOCALAPPDATA%\Foldry\cache`                 |
-| macOS    | `~/Library/Application Support/app.foldry.desktop` | same application-support directory                 | `~/Library/Caches/app.foldry.desktop`         |
+## A folder cannot be added
 
-Config contains `settings.yaml`, `active.packplan.yaml`, `profiles/`, and
-`presets/`. Local data contains `app.db` and `crash-reports/`. Cache contains
-streaming manifests that Foldry owns and may clean up.
+Foldry accepts existing readable directories. It canonicalizes the path, so an
+alias of an already remembered folder selects the existing configuration instead
+of creating a duplicate.
 
-## The application does not start
+Check permissions and confirm the path is a directory rather than a file or
+broken link.
 
-On Linux, confirm WebKitGTK 4.1 and the dependencies from
-[running.md](running.md) are installed. Start the executable from a terminal to
-capture loader errors. An AppImage may need:
+## Folder size is partial
+
+Size calculation intentionally stops at symlinks, junctions, reparse points,
+mounted subtrees, and unreadable entries. A partial result is a warning, not an
+estimate of bytes that were not read.
+
+## Preview does not match recent changes
+
+Save the Ignore Profile and action settings, then start Preview again. Any source,
+profile, or action change invalidates the cache key.
+
+Execution always rescans. A stale Preview is never used as the run manifest.
+
+## Output validation fails
+
+The output directory cannot equal the source or be inside it. Verify that the
+directory exists and is writable, the filename uses only `{folder}` and `{date}`
+tokens, and the destination filesystem supports an atomic same-filesystem rename.
+
+## No archive appears with conflict policy `skip`
+
+This is expected when the destination already exists. Skip does not overwrite the
+file and does not leave a temporary archive.
+
+Use **increment** to produce a numbered destination or **replace safely** to keep
+the old archive until the replacement is verified.
+
+## A run becomes Interrupted after restart
+
+Foldry reconciles unfinished database records at startup. A process that ended
+without persisting a terminal state becomes Interrupted. Published archives are
+never deleted during this recovery.
+
+## Default profile disappeared
+
+Restart Foldry or run any operation that loads profiles. The shipped Default
+working copy is restored automatically. Missing profile references fall back to
+Default.
+
+## A folder stays hidden
+
+Use the remembered-folders dialog or:
 
 ```bash
-chmod +x Foldry_*.AppImage
-./Foldry_*.AppImage
+foldry folder remembered
 ```
 
-On Windows, install the Evergreen WebView2 Runtime. On macOS, an unsigned test build
-may be blocked by Gatekeeper; official release candidates must be signed and
-notarized rather than asking users to disable security controls.
+Adding the same source path again also restores its existing configuration.
 
-## A profile is invalid
+## Reset isolated development state
 
-Open Profiles and inspect the line diagnostics. Invalid text is intentionally
-saved so edits are not lost, but preview and new runs using that profile remain
-blocked. Compare the file with its `*.packignore.previous-good` sibling if one
-exists. The syntax reference is [here](contracts/packignore-v1.md).
-
-## A task cannot be added
-
-Foldry accepts directories, not individual files. The same canonical source can
-appear only once in the active plan; adding it again focuses the existing task.
-Permission-denied, disconnected network, and missing directories remain visible
-as errors instead of being replaced or removed silently.
-
-## A run failed or skipped files
-
-Open the run history and detailed logs. The default `unreadable_policy: fail`
-stops when a planned file disappears, changes, or cannot be read. The explicit
-`warn_and_skip` policy publishes the remaining entries and reports
-success-with-warnings.
-
-Check:
-
-- source and output permissions;
-- free space on the output filesystem;
-- locks held by another process;
-- whether the output directory is a disconnected network/removable mount;
-- the exact warning/error code in exported JSONL logs.
-
-Foldry leaves the previous archive unchanged when failure occurs before
-publication. A `.part` or reservation that survives a hard crash is reconciled on
-the next startup only after ownership, age, and process-liveness checks.
-
-## An archive already exists
-
-- `skip` returns without writing;
-- `increment` reserves `name (N)` atomically;
-- `overwrite` keeps the old archive until the replacement has finished and passed
-  verification.
-
-Never delete reservation sidecars while another Foldry GUI or CLI process may be
-running. For recovery, stop all Foldry processes first and retain a copy of the
-directory before manual cleanup.
-
-## History is larger or smaller than expected
-
-By default, run metadata is retained for no more than one year and 10,000 runs.
-Detailed logs are retained for no more than 90 days and 1,000 runs. The stricter
-age/count boundary wins. `unlimited` disables the corresponding cleanup.
-
-Retention never deletes final archive files. Deleting `app.db` manually removes
-history and logs, so close Foldry and back it up first. Profiles, settings, and the
-active plan live in the separate config directory.
-
-## Browser build works but the desktop build fails
-
-Run:
+Do not delete normal application data while diagnosing a problem. Start an
+isolated CLI layout instead:
 
 ```bash
-corepack pnpm tauri info
-pnpm desktop:build
+foldry \
+  --config-dir /tmp/foldry-test/config \
+  --data-dir /tmp/foldry-test/data \
+  --cache-dir /tmp/foldry-test/cache \
+  config path
 ```
 
-The first command reports missing platform libraries and toolchains. Keep Node,
-pnpm, Rust, and Tauri versions pinned as described in
-[running.md](running.md). On Windows MSI builds, also verify the VBSCRIPT optional
-feature.
+These override flags are intentionally hidden from normal help.
 
-## Reporting a reproducible problem
+## Reporting a problem
 
-Include the Foldry version, OS build and architecture, filesystem type, archive
-format and policies, exact steps, and exported logs. State whether an old archive,
-`.part`, or reservation remained. Do not attach source files, profiles, paths, or
-logs containing secrets unless you have reviewed and redacted them.
+Include:
+
+- Foldry version and installation type;
+- operating system and filesystem;
+- the command or UI sequence;
+- archive format and conflict/verification settings;
+- exported logs or `foldry history logs <run-id>`;
+- whether a previous archive, `.part`, or reservation file remained.
+
+Do not attach real secrets or personal source paths to a public issue. Create a
+minimal disposable reproduction whenever possible.

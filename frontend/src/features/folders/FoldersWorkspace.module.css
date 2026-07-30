@@ -1,0 +1,669 @@
+.shell {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.workspace {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: minmax(500px, 2fr) minmax(0, 3fr);
+  overflow: hidden;
+}
+
+.foldersPane,
+.settingsPane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.5rem;
+}
+
+.foldersPane {
+  overflow: hidden;
+  border-right: 1px solid var(--mantine-color-default-border);
+}
+
+.settingsPane {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.folderScroll {
+  min-height: 0;
+  flex: 1;
+}
+
+.folderCard {
+  --folder-label-offset: calc(2.75rem + var(--mantine-spacing-md));
+
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto;
+  border-color: var(--mantine-color-default-border);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.folderCard:hover {
+  border-color: light-dark(
+    var(--mantine-color-gray-4),
+    var(--mantine-color-dark-3)
+  );
+  box-shadow: var(--mantine-shadow-xs);
+}
+
+.folderCard[data-selected] {
+  border-color: var(--mantine-primary-color-filled);
+  box-shadow: 0 0 0 1px
+    color-mix(in srgb, var(--mantine-primary-color-filled) 14%, transparent);
+}
+
+.folderSelect {
+  display: grid;
+  min-width: 0;
+  grid-column: 1 / -1;
+  grid-row: 1 / span 2;
+  gap: 0.9rem;
+  padding: 1rem;
+  color: var(--mantine-color-text);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: inherit;
+}
+
+.folderSelect:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: -2px;
+}
+
+.folderIcon {
+  display: grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  flex: 0 0 auto;
+  color: var(--mantine-color-blue-filled);
+  border: 1px solid
+    color-mix(in srgb, var(--mantine-color-blue-filled) 38%, transparent);
+  border-radius: var(--mantine-radius-md);
+  place-items: center;
+}
+
+.folderIcon[data-enabled="true"] {
+  color: var(--mantine-color-green-filled);
+  border-color: color-mix(
+    in srgb,
+    var(--mantine-color-green-filled) 38%,
+    transparent
+  );
+}
+
+.folderHeadingIcon {
+  display: inline-grid;
+  flex: 0 0 auto;
+  color: var(--mantine-color-dimmed);
+  place-items: center;
+}
+
+.folderHeadingIcon[data-enabled="true"] {
+  color: var(--mantine-color-green-filled);
+}
+
+.folderMeta {
+  min-width: 0;
+  padding-left: var(--folder-label-offset);
+}
+
+.folderStatus {
+  display: flex;
+  min-width: 0;
+  grid-column: 1;
+  grid-row: 3;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0.35rem 0.5rem 0.8rem calc(1rem + var(--folder-label-offset));
+  color: var(--mantine-color-text);
+}
+
+.folderActions {
+  grid-column: 2;
+  grid-row: 3;
+  justify-content: flex-end;
+  padding: 0.35rem 1rem 0.8rem;
+}
+
+.path {
+  overflow: hidden;
+  font-family: var(--mantine-font-family-monospace);
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.emptyState {
+  display: flex;
+  min-height: 320px;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.85rem;
+  align-items: center;
+  justify-content: center;
+  color: var(--mantine-color-dimmed);
+}
+
+.folderSettingsCard,
+.actionCard,
+.catalogItem {
+  background: color-mix(
+    in srgb,
+    var(--mantine-color-default-hover) 35%,
+    var(--mantine-color-body)
+  );
+}
+
+.actionCard {
+  min-width: 0;
+}
+
+.actionCard[draggable="true"] {
+  cursor: default;
+}
+
+.dragHandle {
+  display: inline-grid;
+  color: var(--mantine-color-dimmed);
+  cursor: grab;
+  place-items: center;
+}
+
+.dragHandle:active {
+  cursor: grabbing;
+}
+
+.actionNumber {
+  display: inline-grid;
+  min-width: 2.25rem;
+  height: 1.75rem;
+  padding-inline: 0.45rem;
+  color: var(--mantine-color-dimmed);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-sm);
+  font-weight: 700;
+  line-height: 1;
+  background: var(--mantine-color-body);
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-sm);
+  place-items: center;
+}
+
+.actionNumber[data-enabled="true"] {
+  color: var(--mantine-color-green-filled);
+  background: color-mix(
+    in srgb,
+    var(--mantine-color-green-filled) 9%,
+    var(--mantine-color-body)
+  );
+  border-color: color-mix(
+    in srgb,
+    var(--mantine-color-green-filled) 55%,
+    transparent
+  );
+}
+
+.folderMetaValue {
+  display: inline-grid;
+  min-height: 1.75rem;
+  padding-inline: 0.45rem;
+  color: var(--mantine-color-dimmed);
+  line-height: 1;
+  background: var(--mantine-color-body);
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-sm);
+  place-items: center;
+}
+
+.actionsEmpty {
+  border-style: dashed;
+}
+
+.commandBar {
+  display: grid;
+  min-height: 82px;
+  flex: 0 0 auto;
+  grid-template-columns: minmax(250px, 1fr) minmax(220px, 0.8fr) auto;
+  gap: 1.25rem;
+  align-items: center;
+  padding: 0.85rem 1.5rem;
+  background: var(--mantine-color-body);
+  border-top: 1px solid var(--mantine-color-default-border);
+}
+
+.overallProgress {
+  min-width: 0;
+}
+
+.dropOverlay {
+  position: absolute;
+  z-index: 20;
+  display: grid;
+  color: var(--mantine-primary-color-filled);
+  background: color-mix(in srgb, var(--mantine-color-body) 90%, transparent);
+  border: 2px dashed var(--mantine-primary-color-filled);
+  border-radius: var(--mantine-radius-lg);
+  place-items: center;
+  align-content: center;
+  inset: 1rem;
+  pointer-events: none;
+}
+
+.browserBackdrop {
+  background: rgb(9 13 20 / 0.22);
+  backdrop-filter: none;
+}
+
+:global([data-mantine-color-scheme="dark"]) .browserBackdrop {
+  background: rgb(0 0 0 / 0.32);
+}
+
+.browserDrawerContent {
+  overflow: hidden;
+  border-left: 1px solid var(--mantine-color-default-border);
+  box-shadow:
+    -18px 0 38px rgb(0 0 0 / 0.14),
+    -3px 0 10px rgb(0 0 0 / 0.08);
+}
+
+:global([data-mantine-color-scheme="dark"]) .browserDrawerContent {
+  box-shadow:
+    -20px 0 42px rgb(0 0 0 / 0.42),
+    -3px 0 12px rgb(0 0 0 / 0.24);
+}
+
+.browserDrawerBody {
+  height: 100dvh;
+  padding: 0;
+  overflow: hidden;
+}
+
+.browserPanel {
+  display: grid;
+  width: 100%;
+  height: 100dvh;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  background: var(--mantine-color-body);
+}
+
+.browserHeader,
+.browserToolbar,
+.browserFooter {
+  display: flex;
+  min-width: 0;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--mantine-color-default-border);
+}
+
+.browserPath {
+  overflow: hidden;
+  max-width: 48rem;
+  font-family: var(--mantine-font-family-monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browserPath span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.browserToolbar {
+  display: grid;
+  grid-template-columns: auto minmax(10rem, 1fr) auto auto;
+  background: color-mix(
+    in srgb,
+    var(--mantine-color-default-hover) 45%,
+    var(--mantine-color-body)
+  );
+}
+
+.browserBody {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-columns: minmax(190px, 0.28fr) minmax(0, 1fr);
+}
+
+.browserSidebar {
+  min-width: 0;
+  min-height: 0;
+  padding: 0.75rem;
+  border-right: 1px solid var(--mantine-color-default-border);
+}
+
+.browserSectionItem {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.15rem 0.55rem;
+  color: var(--mantine-color-text);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--mantine-radius-sm);
+}
+
+.browserSectionItem span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browserSectionItem:hover,
+.browserSectionItem:focus-visible {
+  background: var(--mantine-color-default-hover);
+}
+
+.browserSectionItem[data-selected] {
+  color: var(--mantine-primary-color-light-color);
+  background: var(--mantine-primary-color-light);
+}
+
+.browserContent {
+  min-width: 0;
+  min-height: 0;
+}
+
+.browserContent [data-radix-scroll-area-viewport]:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: -2px;
+}
+
+.browserListContent {
+  display: grid;
+  overflow: hidden;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.browserListRows {
+  min-width: 0;
+  min-height: 0;
+}
+
+.browserListRows [data-radix-scroll-area-viewport]:focus-visible,
+.listRow:focus-visible {
+  outline: none;
+}
+
+.browserRow {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto auto auto;
+  gap: 0.3rem;
+  align-items: center;
+  padding-block: 0.1rem;
+  padding-inline-end: 0.35rem;
+  border-radius: var(--mantine-radius-sm);
+}
+
+.browserRow:hover {
+  background: var(--mantine-color-default-hover);
+}
+
+.browserRow[data-selected] {
+  background: var(--mantine-primary-color-light);
+}
+
+.browserRow[data-unavailable] {
+  opacity: 0.58;
+}
+
+.browserRowCaretSpacer {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+.browserRowName {
+  display: flex;
+  min-width: 0;
+  gap: 0.45rem;
+  align-items: center;
+  padding: 0.15rem 0.25rem;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+
+.browserRowName span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browserRowName:disabled {
+  color: var(--mantine-color-dimmed);
+}
+
+.browserRow[data-file] .browserRowName {
+  color: color-mix(
+    in srgb,
+    var(--mantine-color-text) 55%,
+    var(--mantine-color-dimmed)
+  );
+}
+
+.browserRowAction {
+  opacity: 0;
+}
+
+.browserRow:hover .browserRowAction,
+.browserRow:focus-within .browserRowAction,
+.listRow:hover .browserRowAction,
+.listRow:focus-within .browserRowAction {
+  opacity: 1;
+}
+
+.browserFooter {
+  border-top: 1px solid var(--mantine-color-default-border);
+  border-bottom: 0;
+}
+
+.listHeader,
+.listRow {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(12rem, 1fr) minmax(8rem, 0.35fr) minmax(
+      8rem,
+      0.3fr
+    );
+  gap: 0.75rem;
+  align-items: center;
+  padding-inline: 0.8rem;
+}
+
+.listContext {
+  overflow: hidden;
+  padding: 0.5rem 0.8rem;
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-xs);
+  color: var(--mantine-color-dimmed);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--mantine-color-body);
+  border-bottom: 1px solid var(--mantine-color-default-border);
+}
+
+.listHeader {
+  padding-block: 0.55rem;
+  background: var(--mantine-color-body);
+  border-bottom: 1px solid var(--mantine-color-default-border);
+}
+
+.listRow {
+  min-height: 2.15rem;
+  padding-block: 0.25rem;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--mantine-color-default-border) 60%, transparent);
+}
+
+.listRow:hover {
+  background: var(--mantine-color-default-hover);
+}
+
+.listRow[data-selected] {
+  background: var(--mantine-primary-color-light);
+}
+
+.listRow[data-file] {
+  color: color-mix(
+    in srgb,
+    var(--mantine-color-text) 55%,
+    var(--mantine-color-dimmed)
+  );
+}
+
+.listRow[data-unavailable] {
+  opacity: 0.58;
+}
+
+.listSizeValue {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.listName {
+  display: flex;
+  min-width: 0;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.listName > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browserContextMenu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 12rem;
+  padding: 0.3rem;
+  background: var(--mantine-color-body);
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+  box-shadow: var(--mantine-shadow-md);
+}
+
+.browserContextMenu button {
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  color: var(--mantine-color-text);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--mantine-radius-sm);
+}
+
+.browserContextMenu button:hover,
+.browserContextMenu button:focus-visible {
+  background: var(--mantine-color-default-hover);
+}
+
+/* Shared lazy tree primitives used by the folder browser foundation. */
+.tree {
+  min-height: 0;
+  flex: 1;
+}
+
+.treeRow {
+  display: grid;
+  width: 100%;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 0.25rem;
+  align-items: center;
+  padding-block: 0.35rem;
+  color: var(--mantine-color-text);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--mantine-radius-sm);
+}
+
+.treeRow[data-unavailable] {
+  opacity: 0.62;
+}
+
+.treeSelect {
+  display: flex;
+  min-width: 0;
+  gap: 0.45rem;
+  align-items: center;
+  padding: 0.2rem;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+
+.treeSelect:disabled {
+  cursor: not-allowed;
+}
+
+.treeAdd {
+  opacity: 0;
+}
+
+.treeRow:hover .treeAdd,
+.treeRow:focus-within .treeAdd {
+  opacity: 1;
+}
+
+.treeBadge {
+  max-width: 4.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.treeMessage {
+  display: block;
+  padding-block: 0.25rem;
+}
+
+.treeRow:hover,
+.treeRow:focus-visible {
+  background: var(--mantine-color-default-hover);
+}
+
+.treeLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .folderCard {
+    transition: none;
+  }
+}

@@ -30,16 +30,16 @@ pub struct MigrationStep {
 pub struct MigrationRegistry {
     kind: DocumentKind,
     current: u16,
-    steps: Vec<MigrationStep>,
+    actions: Vec<MigrationStep>,
 }
 
 impl MigrationRegistry {
     #[must_use]
-    pub fn new(kind: DocumentKind, current: u16, steps: Vec<MigrationStep>) -> Self {
+    pub fn new(kind: DocumentKind, current: u16, actions: Vec<MigrationStep>) -> Self {
         Self {
             kind,
             current,
-            steps,
+            actions,
         }
     }
 
@@ -58,10 +58,10 @@ impl MigrationRegistry {
         }
 
         while version < self.current {
-            let step = self
-                .steps
+            let action = self
+                .actions
                 .iter()
-                .find(|step| step.from == version && step.to == version + 1)
+                .find(|action| action.from == version && action.to == version + 1)
                 .ok_or_else(|| {
                     format!(
                         "no {} migration from version {version} to {}",
@@ -69,8 +69,8 @@ impl MigrationRegistry {
                         version + 1
                     )
                 })?;
-            value = (step.migrate)(value)?;
-            version = step.to;
+            value = (action.migrate)(value)?;
+            version = action.to;
         }
         Ok(value)
     }

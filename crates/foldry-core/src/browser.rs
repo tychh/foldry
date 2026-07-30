@@ -15,7 +15,12 @@ use crate::{
 pub enum BrowserRootKind {
     Home,
     FileSystem,
-    Favorite,
+    Documents,
+    Desktop,
+    Downloads,
+    Volumes,
+    SystemPath,
+    Drive,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -36,12 +41,21 @@ pub struct BrowserNode {
     pub is_network_mount: bool,
     pub is_platform_special: bool,
     pub available: bool,
+    pub modified_at_unix_ms: Option<u128>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BrowserSize {
+    pub logical_bytes: u64,
+    pub partial: bool,
+    pub warnings: u64,
 }
 
 #[derive(Debug)]
 pub enum BrowserError {
     Cancelled,
     ReadDirectory { path: PathBuf, source: io::Error },
+    NotDirectory { path: PathBuf },
 }
 
 impl std::fmt::Display for BrowserError {
@@ -55,6 +69,9 @@ impl std::fmt::Display for BrowserError {
                     path.display()
                 )
             }
+            Self::NotDirectory { path } => {
+                write!(formatter, "{} is not a directory", path.display())
+            }
         }
     }
 }
@@ -63,7 +80,7 @@ impl std::error::Error for BrowserError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::ReadDirectory { source, .. } => Some(source),
-            Self::Cancelled => None,
+            Self::Cancelled | Self::NotDirectory { .. } => None,
         }
     }
 }
@@ -73,20 +90,23 @@ pub struct FileSystemBrowser;
 impl FileSystemBrowser {
     /// Returns roots without scanning any of their descendants.
     #[must_use]
-    pub fn roots(home: Option<&Path>, favorites: &[PathBuf]) -> Vec<BrowserRoot> {
+    pub fn roots(home: Option<&Path>) -> Vec<BrowserRoot> {
         let mut roots = Vec::new();
         if let Some(home) = home {
-            roots.push(root(home, BrowserRootKind::Home));
-        }
-        for path in filesystem_roots() {
-            if !roots.iter().any(|root| root.path == path) {
-                roots.push(root(&path, BrowserRootKind::FileSystem));
+            push_root(&mut roots, home, "Home", BrowserRootKind::Home);
+            for (name, kind) in [
+                ("Documents", BrowserRootKind::Documents),
+                ("Desktop", BrowserRootKind::Desktop),
+                ("Downloads", BrowserRootKind::Downloads),
+            ] {
+                let path = home.join(name);
+                if path.is_dir() {
+                    push_root(&mut roots, &path, name, kind);
+                }
             }
         }
-        for favorite in favorites {
-            if !roots.iter().any(|root| root.path == *favorite) {
-                roots.push(root(favorite, BrowserRootKind::Favorite));
-            }
+        for (path, name, kind) in platform_locations() {
+            push_root(&mut roots, &path, &name, kind);
         }
         roots
     }
@@ -122,23 +142,103 @@ impl FileSystemBrowser {
             }
         }
         nodes.sort_by(|left, right| {
-            left.name
-                .to_lowercase()
-                .cmp(&right.name.to_lowercase())
+            object_sort_rank(left.kind)
+                .cmp(&object_sort_rank(right.kind))
+                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
                 .then_with(|| left.name.cmp(&right.name))
                 .then_with(|| left.id.cmp(&right.id))
         });
         Ok(nodes)
     }
+
+    #[must_use]
+    pub fn node(path: &Path) -> BrowserNode {
+        let parent_metadata = path.parent().and_then(|parent| fs::metadata(parent).ok());
+        browser_node(path, parent_metadata.as_ref(), &MountTable::load())
+    }
+
+    pub fn directory_size(
+        directory: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<BrowserSize, BrowserError> {
+        if !directory.is_dir() {
+            return Err(BrowserError::NotDirectory {
+                path: directory.to_path_buf(),
+            });
+        }
+        let mut result = BrowserSize {
+            logical_bytes: 0,
+            partial: false,
+            warnings: 0,
+        };
+        let root_metadata =
+            fs::metadata(directory).map_err(|source| BrowserError::ReadDirectory {
+                path: directory.to_path_buf(),
+                source,
+            })?;
+        let mounts = MountTable::load();
+        let mut pending = vec![(directory.to_path_buf(), root_metadata)];
+        while let Some((current, current_metadata)) = pending.pop() {
+            if cancellation.is_cancelled() {
+                return Err(BrowserError::Cancelled);
+            }
+            let entries = match fs::read_dir(&current) {
+                Ok(entries) => entries,
+                Err(_) => {
+                    result.partial = true;
+                    result.warnings = result.warnings.saturating_add(1);
+                    continue;
+                }
+            };
+            for entry in entries {
+                if cancellation.is_cancelled() {
+                    return Err(BrowserError::Cancelled);
+                }
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(_) => {
+                        result.partial = true;
+                        result.warnings = result.warnings.saturating_add(1);
+                        continue;
+                    }
+                };
+                let metadata = match fs::symlink_metadata(entry.path()) {
+                    Ok(metadata) => metadata,
+                    Err(_) => {
+                        result.partial = true;
+                        result.warnings = result.warnings.saturating_add(1);
+                        continue;
+                    }
+                };
+                if is_link_or_reparse(&metadata) {
+                    continue;
+                }
+                if metadata.is_dir() {
+                    let path = entry.path();
+                    if !mounts.is_mount(&path)
+                        && !is_different_device(Some(&current_metadata), &metadata)
+                    {
+                        pending.push((path, metadata));
+                    }
+                } else if metadata.is_file() {
+                    result.logical_bytes = result.logical_bytes.saturating_add(metadata.len());
+                }
+            }
+        }
+        Ok(result)
+    }
 }
 
-fn root(path: &Path, kind: BrowserRootKind) -> BrowserRoot {
-    BrowserRoot {
+fn push_root(roots: &mut Vec<BrowserRoot>, path: &Path, name: &str, kind: BrowserRootKind) {
+    if roots.iter().any(|root| root.path == path) {
+        return;
+    }
+    roots.push(BrowserRoot {
         id: stable_node_id(path),
         path: path.to_path_buf(),
-        name: display_name(path),
+        name: name.to_owned(),
         kind,
-    }
+    });
 }
 
 fn browser_node(
@@ -147,14 +247,23 @@ fn browser_node(
     mounts: &MountTable,
 ) -> BrowserNode {
     let metadata = fs::symlink_metadata(path);
-    let (kind, available, is_mount_point) = match metadata.as_ref() {
+    let (kind, available, is_mount_point, modified_at_unix_ms) = match metadata.as_ref() {
         Ok(metadata) => {
             let kind = classify(path, metadata);
             let mount = kind == FileSystemObjectKind::Directory
                 && (mounts.is_mount(path) || is_different_device(parent_metadata, metadata));
-            (kind, directory_is_available(path, kind), mount)
+            (
+                kind,
+                directory_is_available(path, kind),
+                mount,
+                metadata
+                    .modified()
+                    .ok()
+                    .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_millis()),
+            )
         }
-        Err(_) => (FileSystemObjectKind::Unreadable, false, false),
+        Err(_) => (FileSystemObjectKind::Unreadable, false, false, None),
     };
     BrowserNode {
         id: stable_node_id(path),
@@ -165,7 +274,29 @@ fn browser_node(
         is_network_mount: is_mount_point && mounts.is_network_mount(path),
         is_platform_special: is_platform_special(path),
         available: available && !is_platform_special(path),
+        modified_at_unix_ms,
     }
+}
+
+fn object_sort_rank(kind: FileSystemObjectKind) -> u8 {
+    if kind == FileSystemObjectKind::Directory {
+        0
+    } else {
+        1
+    }
+}
+
+#[cfg(windows)]
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
 }
 
 fn display_name(path: &Path) -> String {
@@ -238,28 +369,54 @@ fn is_platform_special(_path: &Path) -> bool {
 }
 
 #[cfg(windows)]
-fn filesystem_roots() -> Vec<PathBuf> {
+fn platform_locations() -> Vec<(PathBuf, String, BrowserRootKind)> {
     (b'A'..=b'Z')
         .map(|letter| PathBuf::from(format!("{}:\\", char::from(letter))))
         .filter(|path| path.exists())
+        .map(|path| {
+            let name = path.to_string_lossy().into_owned();
+            (path, name, BrowserRootKind::Drive)
+        })
         .collect()
 }
 
 #[cfg(target_os = "macos")]
-fn filesystem_roots() -> Vec<PathBuf> {
-    let mut roots = vec![PathBuf::from("/")];
-    if let Ok(volumes) = fs::read_dir("/Volumes") {
-        roots.extend(
-            volumes
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .filter(|path| path.is_dir()),
-        );
-    }
-    roots
+fn platform_locations() -> Vec<(PathBuf, String, BrowserRootKind)> {
+    vec![
+        (
+            PathBuf::from("/"),
+            "/".to_owned(),
+            BrowserRootKind::FileSystem,
+        ),
+        (
+            PathBuf::from("/Volumes"),
+            "Volumes".to_owned(),
+            BrowserRootKind::Volumes,
+        ),
+    ]
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-fn filesystem_roots() -> Vec<PathBuf> {
-    vec![PathBuf::from("/")]
+fn platform_locations() -> Vec<(PathBuf, String, BrowserRootKind)> {
+    [
+        ("/", "/"),
+        ("/opt", "opt"),
+        ("/srv", "srv"),
+        ("/mnt", "mnt"),
+        ("/media", "media"),
+    ]
+    .into_iter()
+    .filter(|(path, _)| Path::new(path).is_dir())
+    .map(|(path, name)| {
+        (
+            PathBuf::from(path),
+            name.to_owned(),
+            if path == "/" {
+                BrowserRootKind::FileSystem
+            } else {
+                BrowserRootKind::SystemPath
+            },
+        )
+    })
+    .collect()
 }

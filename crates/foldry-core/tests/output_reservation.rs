@@ -1,13 +1,15 @@
 use std::{collections::BTreeMap, fs, io::Write};
 
 use foldry_core::{
-    ArchiveFormat, ArchiveOutputSpec, CompressionLevel, ConflictPolicy, PlanOutput, RunId,
-    reserve_output,
+    ArchiveFormat, ArchiveOutputDirectory, ArchiveOutputSpec, CompressionLevel, ConflictPolicy,
+    PlanOutput, RunId, reserve_output,
 };
 
 fn spec(directory: &std::path::Path, policy: ConflictPolicy) -> ArchiveOutputSpec {
     ArchiveOutputSpec {
-        directory: directory.to_path_buf(),
+        directory: ArchiveOutputDirectory::Custom {
+            path: directory.to_path_buf(),
+        },
         filename: "backup".to_owned(),
         format: ArchiveFormat::Zip,
         compression: CompressionLevel::Balanced,
@@ -120,6 +122,6 @@ fn finalized_overwrite_atomically_publishes_new_archive() {
 
     let published = reservation.publish().expect("publish");
 
-    assert_eq!(published, target);
+    assert_eq!(published, target.canonicalize().expect("canonical target"));
     assert_eq!(fs::read_to_string(target).expect("new archive"), "new");
 }

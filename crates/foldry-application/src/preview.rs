@@ -5,7 +5,7 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-use foldry_core::{ScanSummary, TaskId};
+use foldry_core::{ActionId, FolderId, ScanSummary};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -13,6 +13,8 @@ use crate::ActionSpec;
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct PreviewCacheKey {
+    pub folder_id: FolderId,
+    pub action_id: ActionId,
     pub profile_hash: String,
     pub source_metadata_hash: String,
     pub action_hash: String,
@@ -20,6 +22,8 @@ pub struct PreviewCacheKey {
 
 impl PreviewCacheKey {
     pub fn build(
+        folder_id: FolderId,
+        action_id: ActionId,
         profile_text: &str,
         source: &Path,
         action: &ActionSpec,
@@ -27,6 +31,8 @@ impl PreviewCacheKey {
         let action_json = serde_json::to_vec(action)
             .map_err(|error| PreviewKeyError::SerializeAction(error.to_string()))?;
         Ok(Self {
+            folder_id,
+            action_id,
             profile_hash: hash_bytes(profile_text.as_bytes()),
             source_metadata_hash: source_metadata_hash(source)?,
             action_hash: hash_bytes(&action_json),
@@ -89,30 +95,45 @@ impl PreviewSnapshot {
     }
 }
 
-/// One bounded descriptor per task; manifest entries remain on disk.
+/// One bounded descriptor per action; manifest entries remain on disk.
 #[derive(Default)]
 pub struct PreviewCache {
-    snapshots: HashMap<TaskId, PreviewSnapshot>,
+    snapshots: HashMap<(FolderId, ActionId), PreviewSnapshot>,
 }
 
 impl PreviewCache {
     #[must_use]
-    pub fn get(&self, task_id: TaskId, key: &PreviewCacheKey) -> Option<&PreviewSnapshot> {
+    pub fn get(&self, key: &PreviewCacheKey) -> Option<&PreviewSnapshot> {
         self.snapshots
-            .get(&task_id)
+            .get(&(key.folder_id, key.action_id))
             .filter(|snapshot| snapshot.cache_key == *key)
     }
 
-    pub fn insert(
-        &mut self,
-        task_id: TaskId,
-        snapshot: PreviewSnapshot,
-    ) -> Option<PreviewSnapshot> {
-        self.snapshots.insert(task_id, snapshot)
+    pub fn insert(&mut self, snapshot: PreviewSnapshot) -> Option<PreviewSnapshot> {
+        self.snapshots.insert(
+            (snapshot.cache_key.folder_id, snapshot.cache_key.action_id),
+            snapshot,
+        )
     }
 
-    pub fn invalidate_task(&mut self, task_id: TaskId) -> Option<PreviewSnapshot> {
-        self.snapshots.remove(&task_id)
+    pub fn invalidate_action(
+        &mut self,
+        folder_id: FolderId,
+        action_id: ActionId,
+    ) -> Option<PreviewSnapshot> {
+        self.snapshots.remove(&(folder_id, action_id))
+    }
+
+    pub fn invalidate_folder(&mut self, folder_id: FolderId) -> Vec<PreviewSnapshot> {
+        let keys = self
+            .snapshots
+            .keys()
+            .filter(|(candidate, _)| *candidate == folder_id)
+            .copied()
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .filter_map(|key| self.snapshots.remove(&key))
+            .collect()
     }
 
     pub fn invalidate_all(&mut self) -> Vec<PreviewSnapshot> {
@@ -150,9 +171,9 @@ mod tests {
     use std::{collections::BTreeMap, fs};
 
     use foldry_core::{
-        ActionVersion, ArchiveActionSpec, ArchiveFormat, ArchiveOutputSpec, ChecksumAlgorithm,
-        CompressionLevel, ConflictPolicy, TaskId, UnreadablePolicy, VerificationMode,
-        VerificationSpec,
+        ActionId, ActionVersion, ArchiveActionSpec, ArchiveFormat, ArchiveOutputDirectory,
+        ArchiveOutputSpec, ChecksumAlgorithm, CompressionLevel, ConflictPolicy, FolderId,
+        UnreadablePolicy, VerificationMode, VerificationSpec,
     };
 
     use super::{PreviewCache, PreviewCacheKey, PreviewSnapshot};
@@ -162,7 +183,7 @@ mod tests {
         ActionSpec::Archive(ArchiveActionSpec {
             version: ActionVersion::V1,
             output: ArchiveOutputSpec {
-                directory: "out".into(),
+                directory: ArchiveOutputDirectory::Parent,
                 filename: "archive".into(),
                 format: ArchiveFormat::Zip,
                 compression: CompressionLevel::Balanced,
@@ -183,15 +204,41 @@ mod tests {
     #[test]
     fn key_changes_with_profile_source_metadata_and_action() {
         let directory = tempfile::tempdir().expect("temp directory");
-        let first = PreviewCacheKey::build("profile-a", directory.path(), &action(true))
-            .expect("first key");
-        let changed_profile =
-            PreviewCacheKey::build("profile-b", directory.path(), &action(true)).expect("profile");
-        let changed_action =
-            PreviewCacheKey::build("profile-a", directory.path(), &action(false)).expect("action");
+        let folder_id = FolderId::new();
+        let action_id = ActionId::new();
+        let first = PreviewCacheKey::build(
+            folder_id,
+            action_id,
+            "profile-a",
+            directory.path(),
+            &action(true),
+        )
+        .expect("first key");
+        let changed_profile = PreviewCacheKey::build(
+            folder_id,
+            action_id,
+            "profile-b",
+            directory.path(),
+            &action(true),
+        )
+        .expect("profile");
+        let changed_action = PreviewCacheKey::build(
+            folder_id,
+            action_id,
+            "profile-a",
+            directory.path(),
+            &action(false),
+        )
+        .expect("action");
         fs::write(directory.path().join("new-file"), "data").expect("write source");
-        let changed_source =
-            PreviewCacheKey::build("profile-a", directory.path(), &action(true)).expect("source");
+        let changed_source = PreviewCacheKey::build(
+            folder_id,
+            action_id,
+            "profile-a",
+            directory.path(),
+            &action(true),
+        )
+        .expect("source");
 
         assert_ne!(first, changed_profile);
         assert_ne!(first, changed_action);
@@ -201,9 +248,16 @@ mod tests {
     #[test]
     fn cache_requires_an_exact_key_and_supports_explicit_invalidation() {
         let directory = tempfile::tempdir().expect("temp directory");
-        let task_id = TaskId::new();
-        let key =
-            PreviewCacheKey::build("profile-a", directory.path(), &action(true)).expect("key");
+        let folder_id = FolderId::new();
+        let action_id = ActionId::new();
+        let key = PreviewCacheKey::build(
+            folder_id,
+            action_id,
+            "profile-a",
+            directory.path(),
+            &action(true),
+        )
+        .expect("key");
         let snapshot = PreviewSnapshot {
             cache_key: key.clone(),
             manifest_id: "manifest".to_owned(),
@@ -211,21 +265,18 @@ mod tests {
             summary: Default::default(),
         };
         let mut cache = PreviewCache::default();
-        cache.insert(task_id, snapshot);
+        cache.insert(snapshot);
 
-        assert!(cache.get(task_id, &key).is_some());
+        assert!(cache.get(&key).is_some());
         assert!(
             cache
-                .get(
-                    task_id,
-                    &PreviewCacheKey {
-                        profile_hash: "changed".to_owned(),
-                        ..key.clone()
-                    }
-                )
+                .get(&PreviewCacheKey {
+                    profile_hash: "changed".to_owned(),
+                    ..key.clone()
+                })
                 .is_none()
         );
-        assert!(cache.invalidate_task(task_id).is_some());
-        assert!(cache.get(task_id, &key).is_none());
+        assert!(cache.invalidate_action(folder_id, action_id).is_some());
+        assert!(cache.get(&key).is_none());
     }
 }

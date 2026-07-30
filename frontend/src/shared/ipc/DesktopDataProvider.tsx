@@ -7,6 +7,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -26,6 +27,7 @@ import {
   type DesktopCommandArgs,
   normalizeIpcError,
 } from "./client";
+import { isTerminalRunState } from "../runs/runState";
 
 export type ConnectionState =
   "loading" | "connected" | "reconnecting" | "error";
@@ -36,6 +38,7 @@ type DesktopDataContextValue = {
   error: IpcError | null;
   preview: boolean;
   progressByRun: ReadonlyMap<string, ProgressSnapshot>;
+  sessionStartedAt: number;
   reload: () => Promise<void>;
   query: <T>(name: DesktopCommand, args?: DesktopCommandArgs) => Promise<T>;
   command: <T>(
@@ -48,14 +51,23 @@ const DesktopDataContext = createContext<DesktopDataContextValue | null>(null);
 
 export function DesktopDataProvider({ children }: PropsWithChildren) {
   const [client] = useState<DesktopClient>(createDesktopClient);
+  const [sessionStartedAt] = useState(Date.now);
   const [snapshot, setSnapshot] = useState<BootstrapSnapshot | null>(null);
   const [connection, setConnection] = useState<ConnectionState>("loading");
   const [error, setError] = useState<IpcError | null>(null);
   const [progressByRun, setProgressByRun] = useState<
     ReadonlyMap<string, ProgressSnapshot>
   >(() => new Map());
+  const runEventRevisionRef = useRef(new Map<string, number>());
 
   const applyEvent = useCallback((event: RunEvent) => {
+    if (
+      event.event.type === "state_changed" ||
+      event.event.type === "completed"
+    ) {
+      const revisions = runEventRevisionRef.current;
+      revisions.set(event.run_id, (revisions.get(event.run_id) ?? 0) + 1);
+    }
     if (event.event.type === "progress") {
       const progress = event.event.progress;
       setProgressByRun((current) => {
@@ -65,22 +77,26 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
       });
     }
     setSnapshot((current) =>
-      current
-        ? {
-            ...current,
-            active_runs: updateRunRecords(current.active_runs, event),
-          }
-        : current,
+      current ? applyRunEvent(current, event) : current,
     );
   }, []);
 
   const reload = useCallback(async () => {
+    const revisionsAtStart = new Map(runEventRevisionRef.current);
     setConnection((current) =>
       current === "loading" ? "loading" : "reconnecting",
     );
     try {
       const next = await client.bootstrap();
-      setSnapshot(next);
+      setSnapshot((current) =>
+        current
+          ? reconcileBootstrapAfterRunEvents(
+              next,
+              current,
+              changedRunIds(revisionsAtStart, runEventRevisionRef.current),
+            )
+          : next,
+      );
       setError(null);
       setConnection("connected");
     } catch (caught) {
@@ -175,6 +191,7 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
       error,
       preview: client.preview,
       progressByRun,
+      sessionStartedAt,
       reload,
       query,
       command,
@@ -187,6 +204,7 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
       progressByRun,
       query,
       reload,
+      sessionStartedAt,
       snapshot,
     ],
   );
@@ -217,7 +235,19 @@ function updateRunRecords(records: RunRecord[], event: RunEvent): RunRecord[] {
   }
   let next = current;
   if (event.event.type === "state_changed") {
-    next = { ...current, state: event.event.state };
+    if (
+      isTerminalRunState(current.state) &&
+      !isTerminalRunState(event.event.state)
+    ) {
+      return records;
+    }
+    next = {
+      ...current,
+      state: event.event.state,
+      finished_at: isTerminalRunState(event.event.state)
+        ? event.occurred_at
+        : current.finished_at,
+    };
   } else if (event.event.type === "completed") {
     next = {
       ...current,
@@ -229,6 +259,62 @@ function updateRunRecords(records: RunRecord[], event: RunEvent): RunRecord[] {
   const updated = [...records];
   updated[index] = next;
   return updated;
+}
+
+export function applyRunEvent(
+  snapshot: BootstrapSnapshot,
+  event: RunEvent,
+): BootstrapSnapshot {
+  return {
+    ...snapshot,
+    active_runs: updateRunRecords(snapshot.active_runs, event),
+    recent_runs: updateRunRecords(snapshot.recent_runs, event),
+  };
+}
+
+export function reconcileBootstrapAfterRunEvents(
+  next: BootstrapSnapshot,
+  current: BootstrapSnapshot,
+  changedRunIds: ReadonlySet<string>,
+): BootstrapSnapshot {
+  if (changedRunIds.size === 0) {
+    return next;
+  }
+  return {
+    ...next,
+    active_runs: preserveChangedRuns(
+      next.active_runs,
+      current.active_runs,
+      changedRunIds,
+    ),
+    recent_runs: preserveChangedRuns(
+      next.recent_runs,
+      current.recent_runs,
+      changedRunIds,
+    ),
+  };
+}
+
+function preserveChangedRuns(
+  next: RunRecord[],
+  current: RunRecord[],
+  changedRunIds: ReadonlySet<string>,
+): RunRecord[] {
+  const currentById = new Map(current.map((run) => [run.run_id, run]));
+  return next.map((run) =>
+    changedRunIds.has(run.run_id) ? (currentById.get(run.run_id) ?? run) : run,
+  );
+}
+
+function changedRunIds(
+  before: ReadonlyMap<string, number>,
+  after: ReadonlyMap<string, number>,
+): Set<string> {
+  return new Set(
+    [...after].flatMap(([runId, revision]) =>
+      revision === before.get(runId) ? [] : [runId],
+    ),
+  );
 }
 
 function outcomeState(outcome: RunOutcome): RunState {

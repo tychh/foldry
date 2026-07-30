@@ -85,8 +85,9 @@ macro_rules! uuid_id {
 }
 
 uuid_id!(ProfileId, "Stable identity of a filtering profile.");
-uuid_id!(TaskId, "Stable identity of a configured task.");
-uuid_id!(RunId, "Stable identity of one task execution.");
+uuid_id!(FolderId, "Stable identity of a configured folder.");
+uuid_id!(ActionId, "Stable identity of one configured folder action.");
+uuid_id!(RunId, "Stable identity of one action execution.");
 
 /// Stable lowercase key of a reusable profile preset.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -154,11 +155,13 @@ impl std::error::Error for PresetIdParseError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{PresetId, ProfileId, RunId};
+    use super::{ActionId, FolderId, PresetId, ProfileId, RunId};
 
     #[test]
     fn generated_identifiers_are_uuid_v7() {
         assert_eq!(ProfileId::new().as_uuid().get_version_num(), 7);
+        assert_eq!(FolderId::new().as_uuid().get_version_num(), 7);
+        assert_eq!(ActionId::new().as_uuid().get_version_num(), 7);
         assert_eq!(RunId::new().as_uuid().get_version_num(), 7);
     }
 

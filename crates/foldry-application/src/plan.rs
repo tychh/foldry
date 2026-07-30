@@ -1,9 +1,12 @@
 use std::{
     collections::{BTreeMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
-use foldry_core::{ActionVersion, ArchiveActionSpec, Extensions, ProfileId, TaskId};
+use foldry_core::{
+    ActionId, ActionVersion, ArchiveActionSpec, ArchiveOutputDirectory, Extensions, FolderId,
+    ProfileId,
+};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::Error as DeError,
@@ -21,8 +24,8 @@ use crate::{
 pub struct PlanVersion(pub u16);
 
 impl PlanVersion {
-    pub const V1: Self = Self(1);
-    pub const CURRENT: Self = Self::V1;
+    pub const V2: Self = Self(2);
+    pub const CURRENT: Self = Self::V2;
 }
 
 impl Default for PlanVersion {
@@ -36,21 +39,42 @@ impl Default for PlanVersion {
 pub struct Plan {
     pub version: PlanVersion,
     pub name: String,
-    pub tasks: Vec<Task>,
+    pub folders: Vec<Folder>,
     #[serde(default, skip_serializing_if = "Extensions::is_empty", flatten)]
     pub extensions: Extensions,
 }
 
-/// One configured source and its ordered action scenario.
+/// One remembered source folder and its independently runnable actions.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct Task {
-    pub id: TaskId,
+pub struct Folder {
+    pub id: FolderId,
     pub source: PathBuf,
+    pub listed: bool,
     pub enabled: bool,
-    pub profile_id: ProfileId,
-    pub steps: Vec<ActionSpec>,
+    pub default_profile_id: ProfileId,
+    pub actions: Vec<FolderAction>,
     #[serde(default, skip_serializing_if = "Extensions::is_empty", flatten)]
     pub extensions: Extensions,
+}
+
+/// Common identity and behavior around one typed action specification.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct FolderAction {
+    pub id: ActionId,
+    pub enabled: bool,
+    pub profile_id_override: Option<ProfileId>,
+    pub spec: ActionSpec,
+    #[serde(default, skip_serializing_if = "Extensions::is_empty", flatten)]
+    pub extensions: Extensions,
+}
+
+impl FolderAction {
+    /// Returns the profile selected by this action after inheritance.
+    #[must_use]
+    pub fn effective_profile_id(&self, folder: &Folder) -> ProfileId {
+        self.profile_id_override
+            .unwrap_or(folder.default_profile_id)
+    }
 }
 
 /// Known or safely preserved future action specification.
@@ -120,12 +144,14 @@ impl<'de> Deserialize<'de> for ActionSpec {
         D: Deserializer<'de>,
     {
         let Value::Object(mut fields) = Value::deserialize(deserializer)? else {
-            return Err(D::Error::custom("action step must be a map"));
+            return Err(D::Error::custom("action specification must be a map"));
         };
         let action_type = fields
             .remove("type")
             .and_then(|value| value.as_str().map(str::to_owned))
-            .ok_or_else(|| D::Error::custom("action step requires a string field `type`"))?;
+            .ok_or_else(|| {
+                D::Error::custom("action specification requires a string field `type`")
+            })?;
 
         if action_type == "archive" {
             return serde_json::from_value(Value::Object(fields))
@@ -158,10 +184,10 @@ impl Plan {
     #[must_use]
     pub fn execution_blockers(&self) -> Vec<ExecutionBlocker> {
         let mut blockers = Vec::new();
-        for (task_index, task) in self.tasks.iter().enumerate() {
-            for (step_index, step) in task.steps.iter().enumerate() {
-                let path = format!("$.tasks[{task_index}].steps[{step_index}]");
-                match step {
+        for (folder_index, folder) in self.folders.iter().enumerate() {
+            for (action_index, action) in folder.actions.iter().enumerate() {
+                let path = format!("$.folders[{folder_index}].actions[{action_index}].spec");
+                match &action.spec {
                     ActionSpec::Archive(spec) if spec.version != ActionVersion::V1 => {
                         blockers.push(ExecutionBlocker {
                             code: ExecutionBlockerCode::UnsupportedActionVersion,
@@ -206,117 +232,169 @@ impl ContractValidation for Plan {
                 "plan name must not be empty",
             ));
         }
-
         validate_extensions(
             &self.extensions,
             "$",
-            &["version", "name", "tasks"],
+            &["version", "name", "folders"],
             &mut issues,
         );
 
-        let mut task_ids = HashSet::new();
+        let mut folder_ids = HashSet::new();
+        let mut action_ids = HashSet::new();
         let mut sources = HashSet::new();
-        for (task_index, task) in self.tasks.iter().enumerate() {
-            let path = format!("$.tasks[{task_index}]");
-            if !task_ids.insert(task.id) {
+        for (folder_index, folder) in self.folders.iter().enumerate() {
+            let path = format!("$.folders[{folder_index}]");
+            if !folder_ids.insert(folder.id) {
                 issues.push(issue(
-                    ValidationCode::DuplicateTaskId,
+                    ValidationCode::DuplicateFolderId,
                     format!("{path}.id"),
-                    "task id must be unique within a plan",
+                    "folder id must be unique within a plan",
                 ));
             }
 
-            let source = task.source.to_string_lossy().into_owned();
+            let source = folder.source.to_string_lossy().into_owned();
             if source.trim().is_empty() {
                 issues.push(issue(
                     ValidationCode::EmptySource,
                     format!("{path}.source"),
-                    "task source must not be empty",
+                    "folder source must not be empty",
                 ));
             } else if !sources.insert(source) {
                 issues.push(issue(
                     ValidationCode::DuplicateSource,
                     format!("{path}.source"),
-                    "task source must be unique within a plan",
-                ));
-            }
-
-            if task.steps.len() != 1 {
-                issues.push(issue(
-                    ValidationCode::InvalidStepCount,
-                    format!("{path}.steps"),
-                    "plan version 1 requires exactly one action step per task",
+                    "folder source must be unique within a plan",
                 ));
             }
 
             validate_extensions(
-                &task.extensions,
+                &folder.extensions,
                 &path,
-                &["id", "source", "enabled", "profile_id", "steps"],
+                &[
+                    "id",
+                    "source",
+                    "listed",
+                    "enabled",
+                    "default_profile_id",
+                    "actions",
+                ],
                 &mut issues,
             );
 
-            for (step_index, step) in task.steps.iter().enumerate() {
-                let step_path = format!("{path}.steps[{step_index}]");
-                match step {
-                    ActionSpec::Archive(spec) => {
-                        if spec.output.directory.as_os_str().is_empty() {
-                            issues.push(issue(
-                                ValidationCode::EmptyOutputDirectory,
-                                format!("{step_path}.output.directory"),
-                                "archive output directory must not be empty",
-                            ));
-                        }
-                        if spec.output.filename.trim().is_empty() {
-                            issues.push(issue(
-                                ValidationCode::EmptyOutputFilename,
-                                format!("{step_path}.output.filename"),
-                                "archive output filename must not be empty",
-                            ));
-                        }
-                        validate_extensions(
-                            &spec.extensions,
-                            &step_path,
-                            &[
-                                "type",
-                                "version",
-                                "output",
-                                "include_root",
-                                "unreadable_policy",
-                                "verification",
-                            ],
-                            &mut issues,
-                        );
-                        validate_extensions(
-                            &spec.output.extensions,
-                            &format!("{step_path}.output"),
-                            &[
-                                "directory",
-                                "filename",
-                                "format",
-                                "compression",
-                                "conflict_policy",
-                            ],
-                            &mut issues,
-                        );
-                        validate_extensions(
-                            &spec.verification.extensions,
-                            &format!("{step_path}.verification"),
-                            &["mode", "checksum"],
-                            &mut issues,
-                        );
-                    }
-                    ActionSpec::Unsupported(spec) => validate_extensions(
-                        &spec.fields,
-                        &step_path,
-                        &["type", "version"],
-                        &mut issues,
-                    ),
+            for (action_index, action) in folder.actions.iter().enumerate() {
+                let action_path = format!("{path}.actions[{action_index}]");
+                if !action_ids.insert(action.id) {
+                    issues.push(issue(
+                        ValidationCode::DuplicateActionId,
+                        format!("{action_path}.id"),
+                        "action id must be unique within a plan",
+                    ));
                 }
+                validate_extensions(
+                    &action.extensions,
+                    &action_path,
+                    &["id", "enabled", "profile_id_override", "spec"],
+                    &mut issues,
+                );
+                validate_action(&folder.source, &action.spec, &action_path, &mut issues);
             }
         }
         issues
     }
+}
+
+fn validate_action(
+    source: &Path,
+    action: &ActionSpec,
+    action_path: &str,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let spec_path = format!("{action_path}.spec");
+    match action {
+        ActionSpec::Archive(spec) => {
+            if let ArchiveOutputDirectory::Custom { path } = &spec.output.directory {
+                if path.as_os_str().is_empty() {
+                    issues.push(issue(
+                        ValidationCode::EmptyOutputDirectory,
+                        format!("{spec_path}.output.directory.path"),
+                        "custom archive output directory must not be empty",
+                    ));
+                } else if path == source || path.starts_with(source) {
+                    issues.push(issue(
+                        ValidationCode::OutputInsideSource,
+                        format!("{spec_path}.output.directory.path"),
+                        "custom archive output directory cannot equal or be inside the source",
+                    ));
+                }
+            }
+            if let Err(message) = validate_filename_template(&spec.output.filename) {
+                issues.push(issue(
+                    ValidationCode::InvalidOutputFilename,
+                    format!("{spec_path}.output.filename"),
+                    message,
+                ));
+            }
+            validate_extensions(
+                &spec.extensions,
+                &spec_path,
+                &[
+                    "type",
+                    "version",
+                    "output",
+                    "include_root",
+                    "unreadable_policy",
+                    "verification",
+                ],
+                issues,
+            );
+            validate_extensions(
+                &spec.output.extensions,
+                &format!("{spec_path}.output"),
+                &[
+                    "directory",
+                    "filename",
+                    "format",
+                    "compression",
+                    "conflict_policy",
+                ],
+                issues,
+            );
+            validate_extensions(
+                &spec.verification.extensions,
+                &format!("{spec_path}.verification"),
+                &["mode", "checksum"],
+                issues,
+            );
+        }
+        ActionSpec::Unsupported(spec) => {
+            validate_extensions(&spec.fields, &spec_path, &["type", "version"], issues)
+        }
+    }
+}
+
+/// Validates the supported archive filename tokens without resolving them.
+pub fn validate_filename_template(template: &str) -> Result<(), String> {
+    if template.trim().is_empty() {
+        return Err("archive output filename template must not be empty".into());
+    }
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let after_open = &rest[open + 1..];
+        let Some(close) = after_open.find('}') else {
+            return Err("archive output filename template contains an unmatched `{`".into());
+        };
+        let token = &after_open[..close];
+        if !matches!(token, "folder" | "date") {
+            return Err(format!(
+                "archive output filename token `{{{token}}}` is not supported"
+            ));
+        }
+        rest = &after_open[close + 1..];
+    }
+    if rest.contains('}') {
+        return Err("archive output filename template contains an unmatched `}`".into());
+    }
+    Ok(())
 }
 
 fn validate_extensions(
@@ -350,8 +428,6 @@ fn issue(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use foldry_core::{
         ArchiveFormat, ArchiveOutputSpec, ChecksumAlgorithm, CompressionLevel, ConflictPolicy,
         UnreadablePolicy, VerificationMode, VerificationSpec,
@@ -363,8 +439,8 @@ mod tests {
         ArchiveActionSpec {
             version: ActionVersion::V1,
             output: ArchiveOutputSpec {
-                directory: PathBuf::from("/tmp"),
-                filename: "example-{date}".into(),
+                directory: ArchiveOutputDirectory::Parent,
+                filename: "{folder}.{date}".into(),
                 format: ArchiveFormat::Zip,
                 compression: CompressionLevel::Balanced,
                 conflict_policy: ConflictPolicy::Increment,
@@ -403,17 +479,24 @@ mod tests {
     #[test]
     fn future_action_version_is_an_execution_blocker() {
         let plan = Plan {
-            version: PlanVersion::V1,
+            version: PlanVersion::V2,
             name: "Active".into(),
-            tasks: vec![Task {
-                id: TaskId::new(),
+            folders: vec![Folder {
+                id: FolderId::new(),
                 source: PathBuf::from("/source"),
+                listed: true,
                 enabled: true,
-                profile_id: ProfileId::new(),
-                steps: vec![ActionSpec::Archive(ArchiveActionSpec {
-                    version: ActionVersion(2),
-                    ..archive_spec()
-                })],
+                default_profile_id: ProfileId::new(),
+                actions: vec![FolderAction {
+                    id: ActionId::new(),
+                    enabled: false,
+                    profile_id_override: None,
+                    spec: ActionSpec::Archive(ArchiveActionSpec {
+                        version: ActionVersion(2),
+                        ..archive_spec()
+                    }),
+                    extensions: Extensions::new(),
+                }],
                 extensions: Extensions::new(),
             }],
             extensions: Extensions::new(),
@@ -423,5 +506,13 @@ mod tests {
             plan.execution_blockers()[0].code,
             ExecutionBlockerCode::UnsupportedActionVersion
         );
+    }
+
+    #[test]
+    fn filename_template_accepts_only_folder_and_date_tokens() {
+        assert!(validate_filename_template("{folder}.{date}").is_ok());
+        assert!(validate_filename_template("{profile}").is_err());
+        assert!(validate_filename_template("{folder").is_err());
+        assert!(validate_filename_template("folder}").is_err());
     }
 }

@@ -5,7 +5,8 @@ use std::{
 };
 
 use foldry_application::{
-    LogRecord, LogRepository, PageRequest, RepositoryError, RunHistoryRepository, RunId, RunRecord,
+    ActionId, FolderId, LogRecord, LogRepository, PageRequest, RepositoryError,
+    RunHistoryRepository, RunId, RunRecord,
 };
 use jiff::Timestamp;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -72,7 +73,8 @@ fn migrate(connection: &Connection) -> Result<(), RepositoryError> {
             "
             CREATE TABLE runs (
                 run_id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL,
+                folder_id TEXT NOT NULL,
+                action_id TEXT NOT NULL,
                 state TEXT NOT NULL,
                 started_at TEXT NOT NULL,
                 finished_at TEXT,
@@ -80,6 +82,7 @@ fn migrate(connection: &Connection) -> Result<(), RepositoryError> {
                 summary_json TEXT
             );
             CREATE INDEX runs_started_at_idx ON runs(started_at DESC);
+            CREATE INDEX runs_folder_action_idx ON runs(folder_id, action_id, started_at DESC);
             CREATE TABLE run_warnings (
                 run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
                 ordinal INTEGER NOT NULL,
@@ -125,7 +128,7 @@ impl RunHistoryRepository for SqliteRepository {
     fn get(&self, run_id: RunId) -> Result<Option<RunRecord>, RepositoryError> {
         self.connection()?
             .query_row(
-                "SELECT run_id, task_id, state, started_at, finished_at, snapshot_json, summary_json
+                "SELECT run_id, folder_id, action_id, state, started_at, finished_at, snapshot_json, summary_json
                  FROM runs WHERE run_id = ?1",
                 [run_id.to_string()],
                 decode_run_row,
@@ -134,20 +137,93 @@ impl RunHistoryRepository for SqliteRepository {
             .map_err(repository_error)
     }
 
-    fn page(&self, page: PageRequest) -> Result<Vec<RunRecord>, RepositoryError> {
+    fn page_filtered(
+        &self,
+        page: PageRequest,
+        folder_id: Option<FolderId>,
+        action_id: Option<ActionId>,
+    ) -> Result<Vec<RunRecord>, RepositoryError> {
         let connection = self.connection()?;
         let offset = sql_integer(page.offset, "page offset")?;
-        let mut statement = connection
-            .prepare(
-                "SELECT run_id, task_id, state, started_at, finished_at, snapshot_json, summary_json
-                 FROM runs ORDER BY started_at DESC, run_id DESC LIMIT ?1 OFFSET ?2",
-            )
-            .map_err(repository_error)?;
-        statement
-            .query_map(params![page.limit.clamp(1, 1000), offset], decode_run_row)
-            .map_err(repository_error)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(repository_error)
+        let limit = page.limit.clamp(1, 1000);
+        let select = "SELECT run_id, folder_id, action_id, state, started_at, finished_at, snapshot_json, summary_json FROM runs";
+        match (folder_id, action_id) {
+            (Some(folder_id), Some(action_id)) => {
+                let mut statement = connection
+                    .prepare(&format!(
+                        "{select} WHERE folder_id = ?1 AND action_id = ?2 ORDER BY started_at DESC, run_id DESC LIMIT ?3 OFFSET ?4"
+                    ))
+                    .map_err(repository_error)?;
+                statement
+                    .query_map(
+                        params![folder_id.to_string(), action_id.to_string(), limit, offset],
+                        decode_run_row,
+                    )
+                    .map_err(repository_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(repository_error)
+            }
+            (Some(folder_id), None) => {
+                let mut statement = connection
+                    .prepare(&format!(
+                        "{select} WHERE folder_id = ?1 ORDER BY started_at DESC, run_id DESC LIMIT ?2 OFFSET ?3"
+                    ))
+                    .map_err(repository_error)?;
+                statement
+                    .query_map(
+                        params![folder_id.to_string(), limit, offset],
+                        decode_run_row,
+                    )
+                    .map_err(repository_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(repository_error)
+            }
+            (None, Some(action_id)) => {
+                let mut statement = connection
+                    .prepare(&format!(
+                        "{select} WHERE action_id = ?1 ORDER BY started_at DESC, run_id DESC LIMIT ?2 OFFSET ?3"
+                    ))
+                    .map_err(repository_error)?;
+                statement
+                    .query_map(
+                        params![action_id.to_string(), limit, offset],
+                        decode_run_row,
+                    )
+                    .map_err(repository_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(repository_error)
+            }
+            (None, None) => {
+                let mut statement = connection
+                    .prepare(&format!(
+                        "{select} ORDER BY started_at DESC, run_id DESC LIMIT ?1 OFFSET ?2"
+                    ))
+                    .map_err(repository_error)?;
+                statement
+                    .query_map(params![limit, offset], decode_run_row)
+                    .map_err(repository_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(repository_error)
+            }
+        }
+    }
+
+    fn non_terminal_for_folder(
+        &self,
+        folder_id: FolderId,
+    ) -> Result<Vec<RunRecord>, RepositoryError> {
+        self.query_non_terminal("folder_id = ?1", &[folder_id.to_string()])
+    }
+
+    fn non_terminal_for_action(
+        &self,
+        folder_id: FolderId,
+        action_id: ActionId,
+    ) -> Result<Vec<RunRecord>, RepositoryError> {
+        self.query_non_terminal(
+            "folder_id = ?1 AND action_id = ?2",
+            &[folder_id.to_string(), action_id.to_string()],
+        )
     }
 
     fn mark_unfinished_interrupted(&self, at: Timestamp) -> Result<u64, RepositoryError> {
@@ -192,6 +268,30 @@ impl RunHistoryRepository for SqliteRepository {
             .map_err(repository_error)?;
         transaction.commit().map_err(repository_error)?;
         Ok((age_deleted + count_deleted) as u64)
+    }
+}
+
+impl SqliteRepository {
+    fn query_non_terminal(
+        &self,
+        predicate: &str,
+        values: &[String],
+    ) -> Result<Vec<RunRecord>, RepositoryError> {
+        let connection = self.connection()?;
+        let sql = format!(
+            "SELECT run_id, folder_id, action_id, state, started_at, finished_at, snapshot_json, summary_json
+             FROM runs
+             WHERE {predicate}
+               AND state IN ('queued','planning','running','paused','stopping')
+             ORDER BY started_at, run_id"
+        );
+        let mut statement = connection.prepare(&sql).map_err(repository_error)?;
+        let parameters = rusqlite::params_from_iter(values.iter());
+        statement
+            .query_map(parameters, decode_run_row)
+            .map_err(repository_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(repository_error)
     }
 }
 
@@ -284,10 +384,11 @@ fn write_run(
 ) -> Result<(), RepositoryError> {
     let statement = if replace {
         "INSERT INTO runs
-         (run_id, task_id, state, started_at, finished_at, snapshot_json, summary_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         (run_id, folder_id, action_id, state, started_at, finished_at, snapshot_json, summary_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(run_id) DO UPDATE SET
-           task_id = excluded.task_id,
+           folder_id = excluded.folder_id,
+           action_id = excluded.action_id,
            state = excluded.state,
            started_at = excluded.started_at,
            finished_at = excluded.finished_at,
@@ -295,15 +396,16 @@ fn write_run(
            summary_json = excluded.summary_json"
     } else {
         "INSERT INTO runs
-         (run_id, task_id, state, started_at, finished_at, snapshot_json, summary_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+         (run_id, folder_id, action_id, state, started_at, finished_at, snapshot_json, summary_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
     };
     transaction
         .execute(
             statement,
             params![
                 run.run_id.to_string(),
-                run.task_id.to_string(),
+                run.folder_id.to_string(),
+                run.action_id.to_string(),
                 enum_text(&run.state)?,
                 run.started_at.to_string(),
                 run.finished_at.map(|time| time.to_string()),
@@ -361,16 +463,17 @@ fn write_run(
 fn decode_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRecord> {
     Ok(RunRecord {
         run_id: parse_field(row.get::<_, String>(0)?)?,
-        task_id: parse_field(row.get::<_, String>(1)?)?,
-        state: parse_enum(row.get::<_, String>(2)?)?,
-        started_at: parse_field(row.get::<_, String>(3)?)?,
+        folder_id: parse_field(row.get::<_, String>(1)?)?,
+        action_id: parse_field(row.get::<_, String>(2)?)?,
+        state: parse_enum(row.get::<_, String>(3)?)?,
+        started_at: parse_field(row.get::<_, String>(4)?)?,
         finished_at: row
-            .get::<_, Option<String>>(4)?
+            .get::<_, Option<String>>(5)?
             .map(parse_field)
             .transpose()?,
-        snapshot: parse_json(row.get::<_, String>(5)?)?,
+        snapshot: parse_json(row.get::<_, String>(6)?)?,
         summary: row
-            .get::<_, Option<String>>(6)?
+            .get::<_, Option<String>>(7)?
             .map(parse_json)
             .transpose()?,
     })

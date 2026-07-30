@@ -1,83 +1,60 @@
-# Contributing to Foldry
+# Feedback and contribution policy
 
-## Before changing code
+Foldry is currently developed and maintained as a single-author project.
 
-1. Read the [system map](docs/architecture/system-map.md).
-2. Check the accepted [ADRs](docs/architecture/README.md).
-3. If a change affects a public format, data safety, or observable behavior and the
-   answer is not already documented, add the question to `notes/decisions.md` before
-   implementing that part.
+Bug reports, usability feedback, and feature requests are welcome. Code
+contributions, patches, and pull requests are not being accepted at this time.
+Please do not invest time in an implementation with the expectation that it will
+be merged upstream.
 
-## Local setup
+This policy keeps the product direction and maintenance workload manageable. It
+is not a judgment on the quality of outside contributions, and it may change in
+the future.
 
-Install the prerequisites from `README.md`, then:
+## Report a bug
 
-```bash
-corepack enable
-pnpm install
-pnpm check
-```
+Before opening an issue:
 
-Use the pinned Rust, Node.js, pnpm, and dependency versions. Update a pin in a
-dedicated change together with its lockfile and compatibility checks.
+1. Check that the problem still occurs in the latest release.
+2. Search existing issues for the same behavior.
+3. Remove private paths, credentials, and personal data from logs and screenshots.
 
-After changing a Rust transport DTO, regenerate and verify frontend contracts:
+A useful bug report includes:
 
-```bash
-pnpm contracts:generate
-pnpm contracts:check
-```
+- Foldry version and installation type;
+- operating system, architecture, and filesystem;
+- a short sequence that reproduces the problem;
+- expected and actual behavior;
+- archive format and relevant action settings;
+- sanitized logs, screenshots, or a disposable test tree when helpful.
 
-## Dependency rules
+Keep one independently actionable problem per issue.
 
-- `foldry-core` must not depend on Tauri, React/Node, SQLite, or transport DTOs.
-- `foldry-application` owns use cases and storage ports.
-- `foldry-storage` implements application ports.
-- CLI and Tauri are adapters to the same application services.
-- Frontend business operations cross the typed Tauri boundary; they are not
-  reimplemented in TypeScript.
+## Suggest a feature
 
-## Quality bar
+Feature requests should explain the problem or workflow first:
 
-Before handing off a change, run:
+- what you are trying to accomplish;
+- why the current workflow is insufficient;
+- whether the request concerns the desktop application, CLI, or both;
+- important safety, privacy, or cross-platform constraints;
+- what a successful outcome would look like.
 
-```bash
-pnpm format:check
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm build
-```
+Mockups and examples are welcome. A proposed implementation is not required.
+Requests may be declined or deferred when they do not fit the current product
+direction or maintenance capacity.
 
-Run `pnpm desktop:build` for changes to Tauri, capabilities, frontend build
-configuration, or bundled resources.
+## Security reports
 
-The workspace test command excludes the Tauri adapter's empty native test harness
-to avoid linking a second WebKit desktop binary. Tauri still passes strict Clippy
-and normal/release builds. Add pure adapter logic to a lightweight testable module
-before introducing Tauri-specific unit tests.
+Do not report a vulnerability in a public issue. Follow the
+[security policy](SECURITY.md) and use a private GitHub Security Advisory.
 
-Tests should be added at the lowest useful level:
+## Pull requests and forks
 
-- unit tests for pure rules and state transitions;
-- integration tests for scanner/planner/archive/storage boundaries;
-- component tests for frontend behavior;
-- end-to-end/manual evidence for platform-specific behavior.
+Unsolicited pull requests may be closed without code review. Please open an issue
+when you want to report a bug or discuss a feature.
 
-Use identifiers from `docs/acceptance-checklist.md` in test names or comments when a
-test closes a release criterion.
-
-## Formatting
-
-- Rust: `cargo fmt`; warnings are denied by Clippy in CI.
-- TypeScript: strict mode, ESLint, and Prettier.
-- User-facing text belongs in localization resources once the i18n layer is added.
-- Markdown uses short sections, descriptive links, and fenced examples.
-
-## Safe changes
-
-- Never overwrite user settings, profiles, plans, or archives before a replacement
-  is fully written and validated.
-- Never follow symlink or junction targets while scanning.
-- Cleanup may delete only artifacts that Foldry can prove it owns.
-- Do not add telemetry or remote crash upload without a new accepted ADR.
+The project license permits forks and independent modifications. The
+[development documentation](docs/development/README.md) remains available for
+people studying, building, or adapting the code, but upstream integration and
+support for fork-specific changes are not implied.

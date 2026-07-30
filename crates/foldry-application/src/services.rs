@@ -8,11 +8,13 @@ use jiff::Timestamp;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ActionSpec, ActivePlanRepository, Clock, ContractValidation, Extensions, IdGenerator,
-    LogRecord, LogRepository, PageRequest, ParserDiagnostic, Plan, PlanVersion, PresetId,
-    PresetRepository, ProfileId, ProfileRepository, RepositoryError, RunHistoryRepository, RunId,
-    RunRecord, RunSnapshot, RunState, Settings, SettingsRepository, StoredPreset, StoredProfile,
-    Task, TaskId,
+    ActionId, ActionSpec, ActionVersion, ActivePlanRepository, ArchiveActionSpec,
+    ArchiveOutputDirectory, ArchiveOutputSpec, BrowserView, Clock, ContractValidation,
+    DEFAULT_PROFILE_FILENAME, Extensions, Folder, FolderAction, FolderId, FolderSnapshot,
+    IdGenerator, LogRecord, LogRepository, PageRequest, ParserDiagnostic, Plan, PlanVersion,
+    PresetId, PresetRepository, ProfileId, ProfileRepository, RepositoryError,
+    RunHistoryRepository, RunId, RunRecord, RunSnapshot, RunState, Settings, SettingsRepository,
+    StoredPreset, StoredProfile, VerificationSpec,
 };
 
 pub struct ApplicationPorts {
@@ -34,9 +36,9 @@ pub struct ApplicationState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreviewRequest {
-    pub task: Task,
+    pub folder: Folder,
     pub profile: StoredProfile,
-    pub action: ActionSpec,
+    pub action: FolderAction,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -82,34 +84,68 @@ impl From<RepositoryError> for UseCaseError {
 pub struct ApplicationServices {
     ports: ApplicationPorts,
     state: Mutex<ApplicationState>,
+    run_preparation: Mutex<()>,
 }
 
 impl ApplicationServices {
     pub fn bootstrap(ports: ApplicationPorts) -> Result<Self, UseCaseError> {
-        let settings = match ports.settings.load()? {
-            Some(settings) => settings,
-            None => {
-                let settings = Settings::default();
-                ports.settings.save(&settings)?;
-                settings
-            }
+        let default_profile = ensure_default_profile(ports.profiles.as_ref())?;
+        let profiles = ports.profiles.list()?;
+        let known_profile = |id: ProfileId| {
+            profiles
+                .iter()
+                .any(|profile| profile.id.is_some_and(|candidate| candidate == id))
         };
-        let active_plan = match ports.active_plan.load()? {
-            Some(plan) => plan,
-            None => {
-                let plan = empty_plan();
-                ports.active_plan.save(&plan)?;
-                plan
-            }
+        let (mut settings, mut settings_changed) = match ports.settings.load()? {
+            Some(settings) => (settings, false),
+            None => (Settings::default(), true),
         };
+        let (mut active_plan, mut active_plan_changed) = match ports.active_plan.load()? {
+            Some(plan) => (plan, false),
+            None => (empty_plan(), true),
+        };
+
+        if let Some(default_id) = default_profile.id {
+            if settings.default_profile_id.is_none()
+                || settings
+                    .default_profile_id
+                    .is_some_and(|profile_id| !known_profile(profile_id))
+            {
+                settings.default_profile_id = Some(default_id);
+                settings_changed = true;
+            }
+            for folder in &mut active_plan.folders {
+                if !known_profile(folder.default_profile_id) {
+                    folder.default_profile_id = default_id;
+                    active_plan_changed = true;
+                }
+                for action in &mut folder.actions {
+                    if action
+                        .profile_id_override
+                        .is_some_and(|profile_id| !known_profile(profile_id))
+                    {
+                        action.profile_id_override = None;
+                        active_plan_changed = true;
+                    }
+                }
+            }
+        }
+
         validate_settings(&settings)?;
         validate_plan(&active_plan)?;
+        if settings_changed {
+            ports.settings.save(&settings)?;
+        }
+        if active_plan_changed {
+            ports.active_plan.save(&active_plan)?;
+        }
         Ok(Self {
             ports,
             state: Mutex::new(ApplicationState {
                 settings,
                 active_plan,
             }),
+            run_preparation: Mutex::new(()),
         })
     }
 
@@ -117,7 +153,12 @@ impl ApplicationServices {
         Ok(self.lock_state()?.clone())
     }
 
-    pub fn save_settings(&self, settings: Settings) -> Result<(), UseCaseError> {
+    pub fn save_settings(&self, mut settings: Settings) -> Result<(), UseCaseError> {
+        if let Some(profile_id) = settings.default_profile_id {
+            settings.default_profile_id =
+                Some(valid_profile_id(&self.require_valid_profile(profile_id)?)?);
+        }
+        normalize_browser_settings(&mut settings);
         validate_settings(&settings)?;
         self.ports.settings.save(&settings)?;
         self.lock_state()?.settings = settings;
@@ -125,9 +166,17 @@ impl ApplicationServices {
     }
 
     pub fn save_active_plan(&self, mut plan: Plan) -> Result<(), UseCaseError> {
-        for task in &mut plan.tasks {
-            task.source = canonical_directory(&task.source)?;
-            self.require_valid_profile(task.profile_id)?;
+        for folder in &mut plan.folders {
+            folder.source = canonical_directory(&folder.source)?;
+            folder.default_profile_id =
+                valid_profile_id(&self.require_valid_profile(folder.default_profile_id)?)?;
+            for action in &mut folder.actions {
+                if let Some(profile_id) = action.profile_id_override {
+                    action.profile_id_override =
+                        Some(valid_profile_id(&self.require_valid_profile(profile_id)?)?);
+                }
+                canonicalize_action_output(&folder.source, action)?;
+            }
         }
         validate_plan(&plan)?;
         self.ports.active_plan.save(&plan)?;
@@ -135,59 +184,255 @@ impl ApplicationServices {
         Ok(())
     }
 
-    pub fn add_task(
+    pub fn add_folder(
         &self,
         source: PathBuf,
-        enabled: bool,
-        profile_id: ProfileId,
-        steps: Vec<ActionSpec>,
-    ) -> Result<Task, UseCaseError> {
+        default_profile_id: Option<ProfileId>,
+    ) -> Result<Folder, UseCaseError> {
         let canonical_source = canonical_directory(&source)?;
-        self.require_valid_profile(profile_id)?;
-        let task = Task {
-            id: self.ports.ids.task_id(),
-            source: canonical_source,
-            enabled,
-            profile_id,
-            steps,
-            extensions: Extensions::new(),
+        let default_profile_id = match default_profile_id {
+            Some(profile_id) => valid_profile_id(&self.require_valid_profile(profile_id)?)?,
+            None => {
+                let configured = self.lock_state()?.settings.default_profile_id;
+                match configured {
+                    Some(profile_id) => valid_profile_id(&self.require_valid_profile(profile_id)?)?,
+                    None => valid_profile_id(&self.ensure_default_profile()?)?,
+                }
+            }
         };
         let mut state = self.lock_state()?;
-        ensure_unique_source(&state.active_plan, &task, None)?;
+        if let Some(index) = state
+            .active_plan
+            .folders
+            .iter()
+            .position(|folder| folder.source == canonical_source)
+        {
+            let mut next = state.active_plan.clone();
+            next.folders[index].listed = true;
+            let folder = next.folders[index].clone();
+            let mut settings = state.settings.clone();
+            remember_recent_parent(&mut settings, &canonical_source);
+            self.ports.active_plan.save(&next)?;
+            self.ports.settings.save(&settings)?;
+            state.active_plan = next;
+            state.settings = settings;
+            return Ok(folder);
+        }
+        let action = default_archive_action(self.ports.ids.action_id(), &state.settings);
+        let folder = Folder {
+            id: self.ports.ids.folder_id(),
+            source: canonical_source,
+            listed: true,
+            enabled: true,
+            default_profile_id,
+            actions: vec![action],
+            extensions: Extensions::new(),
+        };
+        ensure_unique_source(&state.active_plan, &folder, None)?;
         let mut next = state.active_plan.clone();
-        next.tasks.push(task.clone());
+        next.folders.push(folder.clone());
+        let mut settings = state.settings.clone();
+        remember_recent_parent(&mut settings, &folder.source);
         validate_plan(&next)?;
         self.ports.active_plan.save(&next)?;
+        self.ports.settings.save(&settings)?;
         state.active_plan = next;
-        Ok(task)
+        state.settings = settings;
+        Ok(folder)
     }
 
-    pub fn update_task(&self, task: Task) -> Result<(), UseCaseError> {
-        let mut task = task;
-        task.source = canonical_directory(&task.source)?;
-        self.require_valid_profile(task.profile_id)?;
+    pub fn update_folder(&self, folder: Folder) -> Result<(), UseCaseError> {
+        let mut folder = folder;
+        folder.source = canonical_directory(&folder.source)?;
+        folder.default_profile_id =
+            valid_profile_id(&self.require_valid_profile(folder.default_profile_id)?)?;
+        for action in &mut folder.actions {
+            if let Some(profile_id) = action.profile_id_override {
+                action.profile_id_override =
+                    Some(valid_profile_id(&self.require_valid_profile(profile_id)?)?);
+            }
+            canonicalize_action_output(&folder.source, action)?;
+        }
         let mut state = self.lock_state()?;
         let index = state
             .active_plan
-            .tasks
+            .folders
             .iter()
-            .position(|candidate| candidate.id == task.id)
-            .ok_or_else(|| UseCaseError::NotFound(format!("task {} not found", task.id)))?;
-        ensure_unique_source(&state.active_plan, &task, Some(task.id))?;
+            .position(|candidate| candidate.id == folder.id)
+            .ok_or_else(|| UseCaseError::NotFound(format!("folder {} not found", folder.id)))?;
+        ensure_unique_source(&state.active_plan, &folder, Some(folder.id))?;
         let mut next = state.active_plan.clone();
-        next.tasks[index] = task;
+        next.folders[index] = folder;
         validate_plan(&next)?;
         self.ports.active_plan.save(&next)?;
         state.active_plan = next;
         Ok(())
     }
 
-    pub fn remove_task(&self, task_id: TaskId) -> Result<bool, UseCaseError> {
+    pub fn unlist_folder(&self, folder_id: FolderId) -> Result<bool, UseCaseError> {
+        self.ensure_folder_has_no_active_runs(folder_id)?;
         let mut state = self.lock_state()?;
         let mut next = state.active_plan.clone();
-        let original_len = next.tasks.len();
-        next.tasks.retain(|task| task.id != task_id);
-        if next.tasks.len() == original_len {
+        let folder = next
+            .folders
+            .iter_mut()
+            .find(|folder| folder.id == folder_id)
+            .ok_or_else(|| UseCaseError::NotFound(format!("folder {folder_id} not found")))?;
+        if !folder.listed {
+            return Ok(false);
+        }
+        folder.listed = false;
+        self.ports.active_plan.save(&next)?;
+        state.active_plan = next;
+        Ok(true)
+    }
+
+    pub fn unlisted_folders(&self) -> Result<Vec<Folder>, UseCaseError> {
+        Ok(self
+            .lock_state()?
+            .active_plan
+            .folders
+            .iter()
+            .filter(|folder| !folder.listed)
+            .cloned()
+            .collect())
+    }
+
+    pub fn forget_folders(&self, folder_ids: &[FolderId]) -> Result<u64, UseCaseError> {
+        let requested = folder_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        for folder_id in &requested {
+            self.ensure_folder_has_no_active_runs(*folder_id)?;
+        }
+        let mut state = self.lock_state()?;
+        if let Some(folder) = state
+            .active_plan
+            .folders
+            .iter()
+            .find(|folder| folder.listed && requested.contains(&folder.id))
+        {
+            return Err(UseCaseError::Conflict(format!(
+                "listed folder {} cannot be forgotten",
+                folder.id
+            )));
+        }
+        let mut next = state.active_plan.clone();
+        let original_len = next.folders.len();
+        next.folders
+            .retain(|folder| !requested.contains(&folder.id));
+        let removed = u64::try_from(original_len - next.folders.len()).unwrap_or(u64::MAX);
+        if removed > 0 {
+            self.ports.active_plan.save(&next)?;
+            state.active_plan = next;
+        }
+        Ok(removed)
+    }
+
+    pub fn forget_all_unlisted_folders(&self) -> Result<u64, UseCaseError> {
+        let folder_ids = self
+            .unlisted_folders()?
+            .into_iter()
+            .map(|folder| folder.id)
+            .collect::<Vec<_>>();
+        self.forget_folders(&folder_ids)
+    }
+
+    pub fn add_action(
+        &self,
+        folder_id: FolderId,
+        enabled: bool,
+        profile_id_override: Option<ProfileId>,
+        spec: ActionSpec,
+    ) -> Result<FolderAction, UseCaseError> {
+        let profile_id_override = profile_id_override
+            .map(|profile_id| {
+                self.require_valid_profile(profile_id)
+                    .and_then(|profile| valid_profile_id(&profile))
+            })
+            .transpose()?;
+        let mut action = FolderAction {
+            id: self.ports.ids.action_id(),
+            enabled,
+            profile_id_override,
+            spec,
+            extensions: Extensions::new(),
+        };
+        let mut state = self.lock_state()?;
+        let mut next = state.active_plan.clone();
+        let folder = find_folder_mut(&mut next, folder_id)?;
+        canonicalize_action_output(&folder.source, &mut action)?;
+        folder.actions.push(action.clone());
+        validate_plan(&next)?;
+        self.ports.active_plan.save(&next)?;
+        state.active_plan = next;
+        Ok(action)
+    }
+
+    pub fn add_archive_action(
+        &self,
+        folder_id: FolderId,
+        enabled: bool,
+        profile_id_override: Option<ProfileId>,
+    ) -> Result<FolderAction, UseCaseError> {
+        let settings = self.lock_state()?.settings.clone();
+        let mut action = default_archive_action(self.ports.ids.action_id(), &settings);
+        action.enabled = enabled;
+        action.profile_id_override = profile_id_override
+            .map(|profile_id| {
+                self.require_valid_profile(profile_id)
+                    .and_then(|profile| valid_profile_id(&profile))
+            })
+            .transpose()?;
+        let mut state = self.lock_state()?;
+        let mut next = state.active_plan.clone();
+        let folder = find_folder_mut(&mut next, folder_id)?;
+        canonicalize_action_output(&folder.source, &mut action)?;
+        folder.actions.push(action.clone());
+        validate_plan(&next)?;
+        self.ports.active_plan.save(&next)?;
+        state.active_plan = next;
+        Ok(action)
+    }
+
+    pub fn update_action(
+        &self,
+        folder_id: FolderId,
+        mut action: FolderAction,
+    ) -> Result<(), UseCaseError> {
+        if let Some(profile_id) = action.profile_id_override {
+            action.profile_id_override =
+                Some(valid_profile_id(&self.require_valid_profile(profile_id)?)?);
+        }
+        let mut state = self.lock_state()?;
+        let mut next = state.active_plan.clone();
+        let folder = find_folder_mut(&mut next, folder_id)?;
+        canonicalize_action_output(&folder.source, &mut action)?;
+        let index = folder
+            .actions
+            .iter()
+            .position(|candidate| candidate.id == action.id)
+            .ok_or_else(|| UseCaseError::NotFound(format!("action {} not found", action.id)))?;
+        folder.actions[index] = action;
+        validate_plan(&next)?;
+        self.ports.active_plan.save(&next)?;
+        state.active_plan = next;
+        Ok(())
+    }
+
+    pub fn remove_action(
+        &self,
+        folder_id: FolderId,
+        action_id: ActionId,
+    ) -> Result<bool, UseCaseError> {
+        self.ensure_action_has_no_active_runs(folder_id, action_id)?;
+        let mut state = self.lock_state()?;
+        let mut next = state.active_plan.clone();
+        let folder = find_folder_mut(&mut next, folder_id)?;
+        let original_len = folder.actions.len();
+        folder.actions.retain(|action| action.id != action_id);
+        if folder.actions.len() == original_len {
             return Ok(false);
         }
         self.ports.active_plan.save(&next)?;
@@ -195,8 +440,113 @@ impl ApplicationServices {
         Ok(true)
     }
 
+    pub fn reorder_actions(
+        &self,
+        folder_id: FolderId,
+        ordered_action_ids: &[ActionId],
+    ) -> Result<(), UseCaseError> {
+        let mut state = self.lock_state()?;
+        let mut next = state.active_plan.clone();
+        let folder = find_folder_mut(&mut next, folder_id)?;
+        if ordered_action_ids.len() != folder.actions.len() {
+            return Err(UseCaseError::Invalid(
+                "reorder must contain every action exactly once".into(),
+            ));
+        }
+        let mut remaining = std::mem::take(&mut folder.actions);
+        let mut reordered = Vec::with_capacity(remaining.len());
+        for action_id in ordered_action_ids {
+            let index = remaining
+                .iter()
+                .position(|action| action.id == *action_id)
+                .ok_or_else(|| {
+                    UseCaseError::Invalid(format!(
+                        "action {action_id} is missing or duplicated in reorder"
+                    ))
+                })?;
+            reordered.push(remaining.remove(index));
+        }
+        if !remaining.is_empty() {
+            return Err(UseCaseError::Invalid(
+                "reorder must contain every action exactly once".into(),
+            ));
+        }
+        folder.actions = reordered;
+        self.ports.active_plan.save(&next)?;
+        state.active_plan = next;
+        Ok(())
+    }
+
     pub fn profiles(&self) -> Result<Vec<StoredProfile>, UseCaseError> {
+        self.ensure_default_profile()?;
         self.ports.profiles.list().map_err(Into::into)
+    }
+
+    pub fn profile_usage(&self, profile_id: ProfileId) -> Result<u64, UseCaseError> {
+        let state = self.lock_state()?;
+        Ok(state
+            .active_plan
+            .folders
+            .iter()
+            .map(|folder| {
+                u64::from(folder.default_profile_id == profile_id)
+                    + folder
+                        .actions
+                        .iter()
+                        .filter(|action| action.profile_id_override == Some(profile_id))
+                        .count() as u64
+            })
+            .sum())
+    }
+
+    pub fn browser_favorites(&self) -> Result<Vec<PathBuf>, UseCaseError> {
+        Ok(self.lock_state()?.settings.browser.favorites.clone())
+    }
+
+    pub fn browser_recent(&self) -> Result<Vec<PathBuf>, UseCaseError> {
+        Ok(self
+            .lock_state()?
+            .settings
+            .browser
+            .recent
+            .iter()
+            .filter(|path| path.is_dir())
+            .cloned()
+            .collect())
+    }
+
+    pub fn set_browser_view(&self, view: BrowserView) -> Result<BrowserView, UseCaseError> {
+        let mut state = self.lock_state()?;
+        let mut settings = state.settings.clone();
+        settings.browser.view = view;
+        self.ports.settings.save(&settings)?;
+        state.settings = settings;
+        Ok(view)
+    }
+
+    pub fn set_favorite(
+        &self,
+        path: PathBuf,
+        favorite: bool,
+    ) -> Result<Vec<PathBuf>, UseCaseError> {
+        let canonical = if favorite {
+            canonical_directory(&path)?
+        } else {
+            fs::canonicalize(&path).unwrap_or(path)
+        };
+        let mut state = self.lock_state()?;
+        let mut settings = state.settings.clone();
+        settings
+            .browser
+            .favorites
+            .retain(|candidate| candidate != &canonical);
+        if favorite {
+            settings.browser.favorites.push(canonical);
+        }
+        self.ports.settings.save(&settings)?;
+        let favorites = settings.browser.favorites.clone();
+        state.settings = settings;
+        Ok(favorites)
     }
 
     pub fn create_profile(&self, name: &str) -> Result<StoredProfile, UseCaseError> {
@@ -282,18 +632,46 @@ impl ApplicationServices {
     }
 
     pub fn delete_profile(&self, profile_id: ProfileId) -> Result<bool, UseCaseError> {
-        if self
-            .lock_state()?
-            .active_plan
-            .tasks
-            .iter()
-            .any(|task| task.profile_id == profile_id)
+        if let Some(profile) = self.ports.profiles.get(profile_id)?
+            && is_default_profile(&profile)
         {
-            return Err(UseCaseError::Conflict(format!(
-                "profile {profile_id} is used by an active task"
-            )));
+            return Err(UseCaseError::Conflict(
+                "the default profile cannot be deleted".into(),
+            ));
         }
-        self.ports.profiles.delete(profile_id).map_err(Into::into)
+        if !self.ports.profiles.delete(profile_id)? {
+            return Ok(false);
+        }
+        let default_id = valid_profile_id(&self.ensure_default_profile()?)?;
+        let mut state = self.lock_state()?;
+        let mut next_plan = state.active_plan.clone();
+        let mut plan_changed = false;
+        for folder in &mut next_plan.folders {
+            if folder.default_profile_id == profile_id {
+                folder.default_profile_id = default_id;
+                plan_changed = true;
+            }
+            for action in &mut folder.actions {
+                if action.profile_id_override == Some(profile_id) {
+                    action.profile_id_override = None;
+                    plan_changed = true;
+                }
+            }
+        }
+        let mut next_settings = state.settings.clone();
+        let settings_changed = next_settings.default_profile_id == Some(profile_id);
+        if settings_changed {
+            next_settings.default_profile_id = Some(default_id);
+        }
+        if plan_changed {
+            self.ports.active_plan.save(&next_plan)?;
+            state.active_plan = next_plan;
+        }
+        if settings_changed {
+            self.ports.settings.save(&next_settings)?;
+            state.settings = next_settings;
+        }
+        Ok(true)
     }
 
     pub fn restore_default_profile(&self) -> Result<StoredProfile, UseCaseError> {
@@ -326,54 +704,68 @@ impl ApplicationServices {
             .map_err(Into::into)
     }
 
-    pub fn prepare_preview(&self, task_id: TaskId) -> Result<PreviewRequest, UseCaseError> {
+    pub fn prepare_preview(
+        &self,
+        folder_id: FolderId,
+        action_id: ActionId,
+    ) -> Result<PreviewRequest, UseCaseError> {
         let state = self.lock_state()?;
-        let task = find_task(&state.active_plan, task_id)?.clone();
-        let profile = self.require_valid_profile(task.profile_id)?;
-        let action = executable_action(&task)?.clone();
+        let folder = find_folder(&state.active_plan, folder_id)?.clone();
+        let action = find_action(&folder, action_id)?.clone();
+        executable_action(&action)?;
+        let profile = self.require_valid_profile(action.effective_profile_id(&folder))?;
         Ok(PreviewRequest {
-            task,
+            folder,
             profile,
             action,
         })
     }
 
-    pub fn prepare_run_current(&self, task_id: TaskId) -> Result<RunRecord, UseCaseError> {
+    pub fn prepare_run_current(
+        &self,
+        folder_id: FolderId,
+        action_id: ActionId,
+    ) -> Result<RunRecord, UseCaseError> {
         let state = self.lock_state()?;
-        let task = find_task(&state.active_plan, task_id)?.clone();
-        if !task.enabled {
-            return Err(UseCaseError::Invalid(format!(
-                "task {} is disabled",
-                task.id
-            )));
+        let folder = find_folder(&state.active_plan, folder_id)?;
+        let action = find_action(folder, action_id)?;
+        executable_action(action)?;
+        let profile = self.require_valid_profile(action.effective_profile_id(folder))?;
+        self.insert_queued_run(run_snapshot(folder, action, &state.settings, profile)?)
+    }
+
+    pub fn prepare_folder_enabled(
+        &self,
+        folder_id: FolderId,
+    ) -> Result<Vec<RunRecord>, UseCaseError> {
+        let state = self.lock_state()?.clone();
+        let folder = find_folder(&state.active_plan, folder_id)?;
+        let mut snapshots = Vec::new();
+        for action in folder.actions.iter().filter(|action| action.enabled) {
+            executable_action(action)?;
+            let profile = self.require_valid_profile(action.effective_profile_id(folder))?;
+            snapshots.push(run_snapshot(folder, action, &state.settings, profile)?);
         }
-        executable_action(&task)?;
-        let profile = self.require_valid_profile(task.profile_id)?;
-        self.insert_queued_run(RunSnapshot {
-            task,
-            settings: state.settings.clone(),
-            profile_hash: sha256(&profile.text),
-            profile_text: profile.text,
-        })
+        snapshots
+            .into_iter()
+            .map(|snapshot| self.insert_queued_run(snapshot))
+            .collect()
     }
 
     pub fn prepare_all_enabled(&self) -> Result<Vec<RunRecord>, UseCaseError> {
         let state = self.lock_state()?.clone();
         let mut snapshots = Vec::new();
-        for task in state
+        for folder in state
             .active_plan
-            .tasks
-            .into_iter()
-            .filter(|task| task.enabled)
+            .folders
+            .iter()
+            .filter(|folder| folder.listed && folder.enabled)
         {
-            executable_action(&task)?;
-            let profile = self.require_valid_profile(task.profile_id)?;
-            snapshots.push(RunSnapshot {
-                task,
-                settings: state.settings.clone(),
-                profile_hash: sha256(&profile.text),
-                profile_text: profile.text,
-            });
+            for action in folder.actions.iter().filter(|action| action.enabled) {
+                executable_action(action)?;
+                let profile = self.require_valid_profile(action.effective_profile_id(folder))?;
+                snapshots.push(run_snapshot(folder, action, &state.settings, profile)?);
+            }
         }
         snapshots
             .into_iter()
@@ -386,12 +778,24 @@ impl ApplicationServices {
             self.ports.history.get(previous_run_id)?.ok_or_else(|| {
                 UseCaseError::NotFound(format!("run {previous_run_id} not found"))
             })?;
-        executable_action(&previous.snapshot.task)?;
+        executable_action(&previous.snapshot.action)?;
         self.insert_queued_run(previous.snapshot)
     }
 
     pub fn history(&self, page: PageRequest) -> Result<Vec<RunRecord>, UseCaseError> {
         self.ports.history.page(page).map_err(Into::into)
+    }
+
+    pub fn history_filtered(
+        &self,
+        page: PageRequest,
+        folder_id: Option<FolderId>,
+        action_id: Option<ActionId>,
+    ) -> Result<Vec<RunRecord>, UseCaseError> {
+        self.ports
+            .history
+            .page_filtered(page, folder_id, action_id)
+            .map_err(Into::into)
     }
 
     pub fn run(&self, run_id: RunId) -> Result<Option<RunRecord>, UseCaseError> {
@@ -432,24 +836,73 @@ impl ApplicationServices {
     }
 
     fn require_valid_profile(&self, profile_id: ProfileId) -> Result<StoredProfile, UseCaseError> {
-        let profile = self
-            .ports
-            .profiles
-            .get(profile_id)?
-            .ok_or_else(|| UseCaseError::NotFound(format!("profile {profile_id} not found")))?;
+        let profile = match self.ports.profiles.get(profile_id)? {
+            Some(profile) => profile,
+            None => self.ensure_default_profile()?,
+        };
         if !profile.valid {
             return Err(UseCaseError::InvalidProfile {
-                profile_id,
+                profile_id: profile.id.unwrap_or(profile_id),
                 diagnostics: profile.diagnostics,
             });
         }
         Ok(profile)
     }
 
-    fn insert_queued_run(&self, snapshot: RunSnapshot) -> Result<RunRecord, UseCaseError> {
+    fn ensure_folder_has_no_active_runs(&self, folder_id: FolderId) -> Result<(), UseCaseError> {
+        let active = self.ports.history.non_terminal_for_folder(folder_id)?;
+        if active.is_empty() {
+            Ok(())
+        } else {
+            Err(UseCaseError::Conflict(format!(
+                "folder {folder_id} has {} non-terminal run(s)",
+                active.len()
+            )))
+        }
+    }
+
+    fn ensure_action_has_no_active_runs(
+        &self,
+        folder_id: FolderId,
+        action_id: ActionId,
+    ) -> Result<(), UseCaseError> {
+        let active = self
+            .ports
+            .history
+            .non_terminal_for_action(folder_id, action_id)?;
+        if active.is_empty() {
+            Ok(())
+        } else {
+            Err(UseCaseError::Conflict(format!(
+                "action {action_id} has {} non-terminal run(s)",
+                active.len()
+            )))
+        }
+    }
+
+    fn ensure_default_profile(&self) -> Result<StoredProfile, UseCaseError> {
+        ensure_default_profile(self.ports.profiles.as_ref())
+    }
+
+    fn insert_queued_run(&self, mut snapshot: RunSnapshot) -> Result<RunRecord, UseCaseError> {
+        canonicalize_action_output(&snapshot.folder.source, &mut snapshot.action)?;
+        let _preparation = self
+            .run_preparation
+            .lock()
+            .map_err(|_| UseCaseError::Invalid("run preparation lock is poisoned".into()))?;
+        if let Some(existing) = self
+            .ports
+            .history
+            .non_terminal_for_action(snapshot.folder.id, snapshot.action.id)?
+            .into_iter()
+            .next()
+        {
+            return Ok(existing);
+        }
         let run = RunRecord {
             run_id: self.ports.ids.run_id(),
-            task_id: snapshot.task.id,
+            folder_id: snapshot.folder.id,
+            action_id: snapshot.action.id,
             state: RunState::Queued,
             started_at: self.ports.clock.now(),
             finished_at: None,
@@ -484,8 +937,12 @@ impl IdGenerator for UuidIdGenerator {
         RunId::new()
     }
 
-    fn task_id(&self) -> TaskId {
-        TaskId::new()
+    fn folder_id(&self) -> FolderId {
+        FolderId::new()
+    }
+
+    fn action_id(&self) -> ActionId {
+        ActionId::new()
     }
 
     fn profile_id(&self) -> ProfileId {
@@ -493,11 +950,34 @@ impl IdGenerator for UuidIdGenerator {
     }
 }
 
+fn ensure_default_profile(
+    repository: &dyn ProfileRepository,
+) -> Result<StoredProfile, UseCaseError> {
+    if let Some(profile) = repository.list()?.into_iter().find(is_default_profile) {
+        Ok(profile)
+    } else {
+        repository.restore_default().map_err(Into::into)
+    }
+}
+
+fn is_default_profile(profile: &StoredProfile) -> bool {
+    profile.path.file_name().and_then(|name| name.to_str()) == Some(DEFAULT_PROFILE_FILENAME)
+}
+
+fn valid_profile_id(profile: &StoredProfile) -> Result<ProfileId, UseCaseError> {
+    profile.id.ok_or_else(|| {
+        UseCaseError::Invalid(format!(
+            "valid profile {} does not contain an ID",
+            profile.path.display()
+        ))
+    })
+}
+
 fn empty_plan() -> Plan {
     Plan {
         version: PlanVersion::CURRENT,
         name: "Active plan".into(),
-        tasks: Vec::new(),
+        folders: Vec::new(),
         extensions: Extensions::new(),
     }
 }
@@ -558,44 +1038,148 @@ fn canonical_directory(path: &Path) -> Result<PathBuf, UseCaseError> {
     Ok(canonical)
 }
 
+fn normalize_browser_settings(settings: &mut Settings) {
+    deduplicate_paths(&mut settings.browser.favorites);
+    deduplicate_paths(&mut settings.browser.recent);
+    settings.browser.recent.truncate(10);
+}
+
+fn deduplicate_paths(paths: &mut Vec<PathBuf>) {
+    let mut unique = std::collections::HashSet::new();
+    paths.retain(|path| unique.insert(path.clone()));
+}
+
+fn remember_recent_parent(settings: &mut Settings, source: &Path) {
+    let Some(parent) = source.parent() else {
+        return;
+    };
+    settings
+        .browser
+        .recent
+        .retain(|candidate| candidate != parent);
+    settings.browser.recent.insert(0, parent.to_path_buf());
+    settings.browser.recent.truncate(10);
+}
+
 fn ensure_unique_source(
     plan: &Plan,
-    task: &Task,
-    except: Option<TaskId>,
+    folder: &Folder,
+    except: Option<FolderId>,
 ) -> Result<(), UseCaseError> {
     if let Some(existing) = plan
-        .tasks
+        .folders
         .iter()
-        .find(|existing| except != Some(existing.id) && existing.source == task.source)
+        .find(|existing| except != Some(existing.id) && existing.source == folder.source)
     {
         return Err(UseCaseError::Conflict(format!(
-            "source {} is already used by task {}",
-            task.source.display(),
+            "source {} is already used by folder {}",
+            folder.source.display(),
             existing.id
         )));
     }
     Ok(())
 }
 
-fn find_task(plan: &Plan, task_id: TaskId) -> Result<&Task, UseCaseError> {
-    plan.tasks
+fn find_folder(plan: &Plan, folder_id: FolderId) -> Result<&Folder, UseCaseError> {
+    plan.folders
         .iter()
-        .find(|task| task.id == task_id)
-        .ok_or_else(|| UseCaseError::NotFound(format!("task {task_id} not found")))
+        .find(|folder| folder.id == folder_id)
+        .ok_or_else(|| UseCaseError::NotFound(format!("folder {folder_id} not found")))
 }
 
-fn executable_action(task: &Task) -> Result<&ActionSpec, UseCaseError> {
-    match task.steps.as_slice() {
-        [action @ ActionSpec::Archive(_)] => Ok(action),
-        [ActionSpec::Unsupported(action)] => Err(UseCaseError::Invalid(format!(
+fn find_folder_mut(plan: &mut Plan, folder_id: FolderId) -> Result<&mut Folder, UseCaseError> {
+    plan.folders
+        .iter_mut()
+        .find(|folder| folder.id == folder_id)
+        .ok_or_else(|| UseCaseError::NotFound(format!("folder {folder_id} not found")))
+}
+
+fn find_action(folder: &Folder, action_id: ActionId) -> Result<&FolderAction, UseCaseError> {
+    folder
+        .actions
+        .iter()
+        .find(|action| action.id == action_id)
+        .ok_or_else(|| UseCaseError::NotFound(format!("action {action_id} not found")))
+}
+
+fn executable_action(action: &FolderAction) -> Result<&ActionSpec, UseCaseError> {
+    match &action.spec {
+        spec @ ActionSpec::Archive(_) => Ok(spec),
+        ActionSpec::Unsupported(action) => Err(UseCaseError::Invalid(format!(
             "action type `{}` is unsupported",
             action.action_type
         ))),
-        _ => Err(UseCaseError::Invalid(format!(
-            "task {} requires exactly one archive action",
-            task.id
-        ))),
     }
+}
+
+fn run_snapshot(
+    folder: &Folder,
+    action: &FolderAction,
+    settings: &Settings,
+    profile: StoredProfile,
+) -> Result<RunSnapshot, UseCaseError> {
+    let effective_profile_id = valid_profile_id(&profile)?;
+    Ok(RunSnapshot {
+        folder: FolderSnapshot {
+            id: folder.id,
+            source: folder.source.clone(),
+        },
+        action: action.clone(),
+        effective_profile_id,
+        settings: settings.clone(),
+        profile_hash: sha256(&profile.text),
+        profile_text: profile.text,
+    })
+}
+
+fn default_archive_action(action_id: ActionId, settings: &Settings) -> FolderAction {
+    FolderAction {
+        id: action_id,
+        enabled: false,
+        profile_id_override: None,
+        spec: ActionSpec::Archive(ArchiveActionSpec {
+            version: ActionVersion::V1,
+            output: ArchiveOutputSpec {
+                directory: ArchiveOutputDirectory::Parent,
+                filename: "{folder}.{date}".into(),
+                format: settings.archive_defaults.format,
+                compression: settings.archive_defaults.compression,
+                conflict_policy: settings.archive_defaults.conflict_policy,
+                extensions: Extensions::new(),
+            },
+            include_root: settings.archive_defaults.include_root,
+            unreadable_policy: settings.archive_defaults.unreadable_policy,
+            verification: VerificationSpec {
+                mode: settings.archive_defaults.verification_mode,
+                checksum: settings.archive_defaults.checksum,
+                extensions: Extensions::new(),
+            },
+            extensions: Extensions::new(),
+        }),
+        extensions: Extensions::new(),
+    }
+}
+
+fn canonicalize_action_output(
+    source: &Path,
+    action: &mut FolderAction,
+) -> Result<(), UseCaseError> {
+    let ActionSpec::Archive(spec) = &mut action.spec else {
+        return Ok(());
+    };
+    let ArchiveOutputDirectory::Custom { path } = &mut spec.output.directory else {
+        return Ok(());
+    };
+    let canonical = canonical_directory(path)?;
+    if canonical == source || canonical.starts_with(source) {
+        return Err(UseCaseError::Invalid(format!(
+            "custom archive output {} cannot equal or be inside source {}",
+            canonical.display(),
+            source.display()
+        )));
+    }
+    *path = canonical;
+    Ok(())
 }
 
 fn validate_settings(settings: &Settings) -> Result<(), UseCaseError> {

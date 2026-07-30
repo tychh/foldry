@@ -1,0 +1,33 @@
+version: 2
+name: Forward-compatible plan
+x_vendor:
+  color: blue
+folders:
+  - id: 0190f5f0-7f8b-7d80-a120-4f4f9fe95c21
+    source: /home/user/projects/example
+    listed: true
+    enabled: true
+    default_profile_id: 0190f5f0-7f8b-7d80-a120-4f4f9fe95c20
+    x_folder_label: important
+    actions:
+      - id: 0190f5f0-7f8b-7d80-a120-4f4f9fe95c22
+        enabled: false
+        profile_id_override: null
+        x_action_label: generated
+        spec:
+          type: archive
+          version: 1
+          output:
+            directory:
+              mode: parent
+            filename: '{folder}.{date}'
+            format: zip
+            compression: balanced
+            conflict_policy: increment
+            x_storage_class: local
+          include_root: true
+          unreadable_policy: fail
+          verification:
+            mode: structural
+            checksum: none
+          x_archive_note: preserved

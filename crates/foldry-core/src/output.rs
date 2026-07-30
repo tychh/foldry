@@ -33,7 +33,7 @@ pub enum OutputPlanError {
     InvalidSource(PathBuf),
     InvalidOutputDirectory(PathBuf),
     InvalidFilename(String),
-    SourceEqualsOutput(PathBuf),
+    OutputInsideSource(PathBuf),
     Conflict(PathBuf),
     NoIncrementAvailable(PathBuf),
     Io { path: PathBuf, source: io::Error },
@@ -57,10 +57,10 @@ impl fmt::Display for OutputPlanError {
                 )
             }
             Self::InvalidFilename(name) => write!(formatter, "invalid archive filename: {name}"),
-            Self::SourceEqualsOutput(path) => {
+            Self::OutputInsideSource(path) => {
                 write!(
                     formatter,
-                    "archive output cannot equal source: {}",
+                    "archive output directory cannot equal or be inside source: {}",
                     path.display()
                 )
             }
@@ -103,18 +103,23 @@ pub fn reserve_output(
     if !canonical_source.is_dir() {
         return Err(OutputPlanError::InvalidSource(source.to_path_buf()));
     }
-    let canonical_directory = fs::canonicalize(&spec.directory)
-        .map_err(|_| OutputPlanError::InvalidOutputDirectory(spec.directory.clone()))?;
+    let configured_directory = spec
+        .directory
+        .resolve(&canonical_source)
+        .ok_or_else(|| OutputPlanError::InvalidOutputDirectory(PathBuf::new()))?;
+    let canonical_directory = fs::canonicalize(&configured_directory)
+        .map_err(|_| OutputPlanError::InvalidOutputDirectory(configured_directory.clone()))?;
     if !canonical_directory.is_dir() {
         return Err(OutputPlanError::InvalidOutputDirectory(
-            spec.directory.clone(),
+            configured_directory,
         ));
+    }
+    if canonical_directory == canonical_source || canonical_directory.starts_with(&canonical_source)
+    {
+        return Err(OutputPlanError::OutputInsideSource(canonical_directory));
     }
     let base_name = archive_filename(&spec.filename, spec.format)?;
     let base_path = canonical_directory.join(&base_name);
-    if base_path == canonical_source {
-        return Err(OutputPlanError::SourceEqualsOutput(base_path));
-    }
 
     match spec.conflict_policy {
         ConflictPolicy::Skip => {

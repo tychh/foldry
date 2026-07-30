@@ -17,7 +17,6 @@ import {
   Text,
   TextInput,
   Title,
-  Tooltip,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
@@ -55,10 +54,12 @@ import {
 } from "./profilePresets";
 import classes from "./ProfilesWorkspace.module.css";
 
+const DEFAULT_PROFILE_FILENAME = "default.packignore";
+
 type SaveState = "saved" | "dirty" | "saving" | "error";
 type PresetConfirmation = {
   id: string;
-  operation: "insert-sensitive" | "remove-modified";
+  operation: "remove-sensitive" | "remove-modified";
 } | null;
 type DiffPreview = {
   preset: PresetDefinition;
@@ -95,6 +96,7 @@ export function ProfilesWorkspace({
   const [name, setName] = useState("");
   const [createOpened, createModal] = useDisclosure(false);
   const [renameOpened, renameModal] = useDisclosure(false);
+  const [rulesHelpOpened, rulesHelpModal] = useDisclosure(false);
   const loadedFilename = useRef<string | null>(selected?.filename ?? null);
   const draftRef = useRef(draft);
   const lastSyncedRef = useRef(lastSynced);
@@ -105,6 +107,17 @@ export function ProfilesWorkspace({
     () => snapshot.presets.map(parsePresetDefinition),
     [snapshot.presets],
   );
+  const selectedUsageCount = selected?.id
+    ? snapshot.plan.folders.reduce(
+        (count, folder) =>
+          count +
+          Number(folder.default_profile_id === selected.id) +
+          folder.actions.filter(
+            (action) => action.profile_id_override === selected.id,
+          ).length,
+        0,
+      )
+    : 0;
 
   const save = useCallback(async () => {
     const profile = selectedRef.current;
@@ -242,7 +255,7 @@ export function ProfilesWorkspace({
   };
 
   const deleteProfile = async () => {
-    if (!selected?.id) {
+    if (!selected?.id || selected.filename === DEFAULT_PROFILE_FILENAME) {
       return;
     }
     const deleted = await command<boolean>("delete_profile", {
@@ -265,20 +278,20 @@ export function ProfilesWorkspace({
     state: PresetInstallationState,
   ) => {
     if (state === "absent") {
+      applyPresetText(insertPreset(draft, preset));
+    } else if (state === "installed") {
       if (preset.sensitive) {
         setPresetConfirmation({
           id: preset.id,
-          operation: "insert-sensitive",
+          operation: "remove-sensitive",
         });
       } else {
-        applyPresetText(insertPreset(draft, preset));
+        applyPresetText(removePreset(draft, preset));
       }
-    } else if (state === "installed") {
-      applyPresetText(removePreset(draft, preset));
     } else if (state === "modified") {
       setPresetConfirmation({
         id: preset.id,
-        operation: "remove-modified",
+        operation: preset.sensitive ? "remove-sensitive" : "remove-modified",
       });
     } else {
       setDiffPreview({ preset, nextText: updatePreset(draft, preset) });
@@ -288,21 +301,7 @@ export function ProfilesWorkspace({
   return (
     <Box className={classes.workspace}>
       <aside className={classes.profileRail}>
-        <Group justify="space-between" wrap="nowrap">
-          <Title order={2}>{t("profilesTitle")}</Title>
-          <Tooltip label={t("newProfile")}>
-            <ActionIcon
-              aria-label={t("newProfile")}
-              variant="default"
-              onClick={() => {
-                setName("");
-                createModal.open();
-              }}
-            >
-              <Plus aria-hidden size={17} />
-            </ActionIcon>
-          </Tooltip>
-        </Group>
+        <Title order={2}>{t("profilesTitle")}</Title>
         <Button
           fullWidth
           justify="flex-start"
@@ -315,7 +314,12 @@ export function ProfilesWorkspace({
         >
           {t("newProfile")}
         </Button>
-        <ScrollArea className={classes.profileList}>
+        <ScrollArea
+          className={classes.profileList}
+          offsetScrollbars="y"
+          scrollbarSize={8}
+          scrollbars="y"
+        >
           <Stack gap={4}>
             {snapshot.profiles.map((profile) => (
               <button
@@ -368,9 +372,18 @@ export function ProfilesWorkspace({
                     <PencilSimple aria-hidden size={15} />
                   </ActionIcon>
                 </Group>
-                <Text c="dimmed" mt={3} size="xs">
-                  {selected.filename}
-                </Text>
+                <Group gap="xs" mt={3}>
+                  <Text c="dimmed" size="xs">
+                    {selected.filename}
+                  </Text>
+                  {selectedUsageCount > 0 ? (
+                    <Badge size="xs" variant="light">
+                      {t("profileUses", {
+                        count: selectedUsageCount,
+                      })}
+                    </Badge>
+                  ) : null}
+                </Group>
               </Box>
               <Group gap="md" wrap="nowrap">
                 <SaveIndicator state={saveState} />
@@ -396,14 +409,16 @@ export function ProfilesWorkspace({
                     {t("saveNow")}
                   </Button>
                 ) : null}
-                <ActionIcon
-                  aria-label={t("deleteProfile")}
-                  color="red"
-                  variant="subtle"
-                  onClick={() => setDeleteConfirmation(true)}
-                >
-                  <Trash aria-hidden size={18} />
-                </ActionIcon>
+                {selected.filename !== DEFAULT_PROFILE_FILENAME ? (
+                  <ActionIcon
+                    aria-label={t("deleteProfile")}
+                    color="red"
+                    variant="subtle"
+                    onClick={() => setDeleteConfirmation(true)}
+                  >
+                    <Trash aria-hidden size={18} />
+                  </ActionIcon>
+                ) : null}
               </Group>
             </Group>
 
@@ -440,7 +455,8 @@ export function ProfilesWorkspace({
               </Alert>
             ) : null}
 
-            {deleteConfirmation ? (
+            {deleteConfirmation &&
+            selected.filename !== DEFAULT_PROFILE_FILENAME ? (
               <Paper className={classes.inlineConfirmation} withBorder>
                 <Box>
                   <Text fw={650}>{t("deleteProfileQuestion")}</Text>
@@ -473,16 +489,31 @@ export function ProfilesWorkspace({
               </Alert>
             ) : null}
 
-            <Paper className={classes.editorSurface} withBorder>
+            <Paper
+              className={classes.editorSurface}
+              data-testid="profile-editor-surface"
+              withBorder
+            >
               <ProfileCodeEditor
                 diagnostics={diagnostics}
                 value={draft}
                 onChange={changeDraft}
               />
             </Paper>
-            <Text c="dimmed" className={classes.rulesHelp} size="xs">
-              {t("rulesHelp")}
-            </Text>
+            <Group className={classes.rulesHelp} gap={6} wrap="nowrap">
+              <ActionIcon
+                aria-label={t("packignoreHelpOpen")}
+                className={classes.rulesHelpButton}
+                size="xs"
+                variant="default"
+                onClick={rulesHelpModal.open}
+              >
+                ?
+              </ActionIcon>
+              <Text c="dimmed" size="xs">
+                {t("rulesHelp")}
+              </Text>
+            </Group>
             <Diagnostics
               diagnostics={diagnostics}
               valid={valid}
@@ -499,8 +530,13 @@ export function ProfilesWorkspace({
 
       <aside className={classes.presetRail}>
         <Title order={2}>{t("presets")}</Title>
-        <ScrollArea className={classes.presetList}>
-          <Stack gap="sm" pr="xs">
+        <ScrollArea
+          className={classes.presetList}
+          offsetScrollbars="y"
+          scrollbarSize={8}
+          scrollbars="y"
+        >
+          <Stack gap="sm">
             {presets.map((preset) => {
               const state = presetState(draft, preset);
               return (
@@ -515,13 +551,7 @@ export function ProfilesWorkspace({
                   state={state}
                   onActivate={() => activatePreset(preset, state)}
                   onCancel={() => setPresetConfirmation(null)}
-                  onConfirm={() => {
-                    if (presetConfirmation?.operation === "insert-sensitive") {
-                      applyPresetText(insertPreset(draft, preset));
-                    } else {
-                      applyPresetText(removePreset(draft, preset));
-                    }
-                  }}
+                  onConfirm={() => applyPresetText(removePreset(draft, preset))}
                   onReviewUpdate={() =>
                     setDiffPreview({
                       preset,
@@ -551,6 +581,10 @@ export function ProfilesWorkspace({
         onNameChange={setName}
         onSubmit={() => void renameProfile()}
       />
+      <PackignoreHelpModal
+        opened={rulesHelpOpened}
+        onClose={rulesHelpModal.close}
+      />
       <DiffModal
         preview={diffPreview}
         profileText={draft}
@@ -562,6 +596,63 @@ export function ProfilesWorkspace({
         onClose={() => setDiffPreview(null)}
       />
     </Box>
+  );
+}
+
+function PackignoreHelpModal({
+  opened,
+  onClose,
+}: {
+  opened: boolean;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <Modal
+      centered
+      closeButtonProps={{ "aria-label": t("packignoreHelpClose") }}
+      opened={opened}
+      size="md"
+      title={t("packignoreHelpTitle")}
+      onClose={onClose}
+    >
+      <Stack gap="sm">
+        <Text size="sm">{t("packignoreHelpIntro")}</Text>
+        <Stack gap={6}>
+          <Text size="sm">
+            <Code># note</Code> — {t("packignoreHelpComments")}
+          </Text>
+          <Text size="sm">
+            <Code>cache/</Code> — {t("packignoreHelpDirectory")}
+          </Text>
+          <Text size="sm">
+            <Code>*.tmp</Code> / <Code>**/*.tmp</Code> —{" "}
+            {t("packignoreHelpWildcards")}
+          </Text>
+          <Text size="sm">
+            <Code>!keep.txt</Code> — {t("packignoreHelpNegation")}
+          </Text>
+        </Stack>
+        <Text fw={650} mt="xs" size="sm">
+          {t("packignoreHelpExampleTitle")}
+        </Text>
+        <Code block>{`build/
+!build/
+!build/keep.txt
+**/*.tmp`}</Code>
+        <Text c="dimmed" size="xs">
+          {t("packignoreHelpExample")}
+        </Text>
+        <Text c="dimmed" size="xs">
+          {t("packignoreHelpOrder")}
+        </Text>
+        <Group justify="flex-end" mt="xs">
+          <Button variant="default" onClick={onClose}>
+            {t("close")}
+          </Button>
+        </Group>
+      </Stack>
+    </Modal>
   );
 }
 
@@ -632,7 +723,7 @@ function PresetCard({
 }: {
   preset: PresetDefinition;
   state: PresetInstallationState;
-  confirmation: "insert-sensitive" | "remove-modified" | null;
+  confirmation: "remove-sensitive" | "remove-modified" | null;
   onActivate: () => void;
   onCancel: () => void;
   onConfirm: () => void;
@@ -648,7 +739,7 @@ function PresetCard({
   const actionLabel =
     state === "absent"
       ? t("presetInsert")
-      : state === "installed"
+      : state === "installed" || state === "modified"
         ? t("presetRemove")
         : t("presetUpdate");
 
@@ -676,24 +767,20 @@ function PresetCard({
       {confirmation ? (
         <Box className={classes.presetConfirmation} mt="sm">
           <Text fw={650} size="xs">
-            {confirmation === "insert-sensitive"
-              ? t("presetSensitiveQuestion")
+            {confirmation === "remove-sensitive"
+              ? t("presetSensitiveRemovalQuestion")
               : t("presetModifiedQuestion")}
           </Text>
           <Text c="dimmed" mt={3} size="xs">
-            {confirmation === "insert-sensitive"
-              ? t("presetSensitiveHint")
+            {confirmation === "remove-sensitive"
+              ? t("presetSensitiveRemovalHint")
               : t("presetModifiedHint")}
           </Text>
           <Group gap="xs" mt="xs">
             <Button size="compact-xs" variant="default" onClick={onCancel}>
               {t("cancel")}
             </Button>
-            <Button
-              color={confirmation === "insert-sensitive" ? "orange" : "red"}
-              size="compact-xs"
-              onClick={onConfirm}
-            >
+            <Button color="red" size="compact-xs" onClick={onConfirm}>
               {t("confirm")}
             </Button>
           </Group>

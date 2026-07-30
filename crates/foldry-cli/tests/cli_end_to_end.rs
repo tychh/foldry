@@ -9,16 +9,28 @@ use std::{
 use serde_json::Value;
 
 #[test]
-fn help_exposes_the_stable_v1_command_groups() {
+fn help_exposes_current_folder_action_command_groups() {
     let output = Command::new(binary()).arg("--help").output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
 
     assert!(output.status.success());
     for command in [
-        "profile", "preset", "preview", "archive", "plan", "history", "config",
+        "profile", "preset", "folder", "action", "preview", "archive", "run", "history", "config",
     ] {
         assert!(stdout.contains(command), "{stdout}");
     }
+    assert!(stdout.contains("foldry archive ./project"), "{stdout}");
+
+    let archive = Command::new(binary())
+        .args(["archive", "--help"])
+        .output()
+        .unwrap();
+    let archive_help = String::from_utf8(archive.stdout).unwrap();
+    assert!(archive_help.contains("Output directory"), "{archive_help}");
+    assert!(
+        archive_help.contains("exact profile name"),
+        "{archive_help}"
+    );
 }
 
 #[test]
@@ -49,7 +61,7 @@ fn json_mode_has_a_versioned_envelope_and_validation_exit_code() {
 }
 
 #[test]
-fn profile_preview_archive_and_history_work_end_to_end() {
+fn profile_folder_action_preview_run_and_history_work_end_to_end() {
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("source");
     let output_directory = root.path().join("output");
@@ -94,56 +106,127 @@ fn profile_preview_archive_and_history_work_end_to_end() {
     );
     assert!(edited_output.status.success(), "{}", stderr(&edited_output));
 
-    let preview = run(
+    let added = run(
         root.path(),
         &[
             "--json",
-            "preview",
+            "folder",
+            "add",
             source.to_str().unwrap(),
             "--profile",
             profile_id,
         ],
     );
+    assert!(added.status.success(), "{}", stderr(&added));
+    let added_json: Value = serde_json::from_slice(&added.stdout).unwrap();
+    let folder_id = added_json["data"]["id"].as_str().unwrap();
+    let action_id = added_json["data"]["actions"][0]["id"].as_str().unwrap();
+
+    let preview = run(root.path(), &["--json", "preview", folder_id, action_id]);
     assert!(preview.status.success(), "{}", stderr(&preview));
     let preview_json: Value = serde_json::from_slice(&preview.stdout).unwrap();
-    assert_eq!(preview_json["data"]["included_files"], 1);
-    assert_eq!(preview_json["data"]["excluded_entries"], 1);
+    assert_eq!(preview_json["data"]["folder_id"], folder_id);
+    assert_eq!(preview_json["data"]["action_id"], action_id);
+    assert_eq!(preview_json["data"]["summary"]["included_files"], 1);
+    assert_eq!(preview_json["data"]["summary"]["excluded_entries"], 1);
 
-    let archive = run(
+    let mut action = added_json["data"]["actions"][0].clone();
+    action["enabled"] = Value::Bool(true);
+    action["spec"]["output"]["directory"] =
+        serde_json::json!({"mode": "custom", "path": output_directory});
+    action["spec"]["output"]["filename"] = Value::String("result".into());
+    action["spec"]["output"]["format"] = Value::String("tar_zst".into());
+    action["spec"]["verification"]["mode"] = Value::String("full".into());
+    action["spec"]["verification"]["checksum"] = Value::String("sha256".into());
+    let action_file = root.path().join("action.json");
+    fs::write(&action_file, serde_json::to_vec_pretty(&action).unwrap()).unwrap();
+    let updated = run(
         root.path(),
         &[
-            "--json",
-            "archive",
-            source.to_str().unwrap(),
-            "--profile",
-            profile_id,
-            "--output",
-            output_directory.to_str().unwrap(),
-            "--name",
-            "result",
-            "--format",
-            "tar-zst",
-            "--checksum",
-            "--full-verify",
+            "action",
+            "update",
+            folder_id,
+            action_id,
+            "--from",
+            action_file.to_str().unwrap(),
         ],
     );
-    assert!(archive.status.success(), "{}", stderr(&archive));
-    let archive_json: Value = serde_json::from_slice(&archive.stdout).unwrap();
-    let artifact = archive_json["data"][0]["artifact"]["path"]
+    assert!(updated.status.success(), "{}", stderr(&updated));
+
+    let executed = run(
+        root.path(),
+        &["--json", "action", "run", folder_id, action_id],
+    );
+    assert!(executed.status.success(), "{}", stderr(&executed));
+    let executed_json: Value = serde_json::from_slice(&executed.stdout).unwrap();
+    let artifact = executed_json["data"][0]["artifact"]["path"]
         .as_str()
         .unwrap();
     assert!(Path::new(artifact).is_file());
     assert!(
-        archive_json["data"][0]["artifact"]["checksum_sha256"]
+        executed_json["data"][0]["artifact"]["checksum_sha256"]
             .as_str()
             .is_some_and(|checksum| checksum.len() == 64)
     );
 
-    let history = run(root.path(), &["--json", "history", "list", "--limit", "5"]);
+    let history = run(
+        root.path(),
+        &[
+            "--json", "history", "list", "--folder", folder_id, "--action", action_id, "--limit",
+            "5",
+        ],
+    );
     assert!(history.status.success(), "{}", stderr(&history));
     let history_json: Value = serde_json::from_slice(&history.stdout).unwrap();
     assert_eq!(history_json["data"].as_array().unwrap().len(), 1);
     assert_eq!(history_json["data"][0]["state"], "succeeded");
+    let run_id = history_json["data"][0]["run_id"].as_str().unwrap();
+    let logs = run(
+        root.path(),
+        &["--json", "history", "logs", run_id, "--limit", "20"],
+    );
+    let logs_json: Value = serde_json::from_slice(&logs.stdout).unwrap();
+    assert!(!logs_json["data"].as_array().unwrap().is_empty());
+
+    let unlisted = run(root.path(), &["folder", "unlist", folder_id]);
+    assert!(unlisted.status.success(), "{}", stderr(&unlisted));
+    let remembered = run(root.path(), &["--json", "folder", "remembered"]);
+    let remembered_json: Value = serde_json::from_slice(&remembered.stdout).unwrap();
+    assert_eq!(remembered_json["data"][0]["id"], folder_id);
+    let forgotten = run(root.path(), &["folder", "forget", folder_id]);
+    assert!(forgotten.status.success(), "{}", stderr(&forgotten));
+
+    let repeat = run(root.path(), &["--json", "run", "repeat", run_id]);
+    assert!(repeat.status.success(), "{}", stderr(&repeat));
+}
+
+#[test]
+fn one_shot_archive_does_not_create_a_remembered_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let output = root.path().join("output");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&output).unwrap();
+    fs::write(source.join("file.txt"), "content").unwrap();
+
+    let archived = run(
+        root.path(),
+        &[
+            "archive",
+            source.to_str().unwrap(),
+            "--profile",
+            "Default",
+            "--output",
+            output.to_str().unwrap(),
+            "--name",
+            "one-shot",
+        ],
+    );
+    assert!(archived.status.success(), "{}", stderr(&archived));
+
+    let folders = run(root.path(), &["--json", "folder", "list"]);
+    let json: Value = serde_json::from_slice(&folders.stdout).unwrap();
+    assert_eq!(json["data"], serde_json::json!([]));
 }
 
 #[cfg(unix)]
