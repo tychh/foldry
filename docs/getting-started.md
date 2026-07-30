@@ -1,19 +1,18 @@
 # Getting started
 
-Foldry is available as a desktop application and a standalone command-line tool.
-Both use the same Ignore Profiles, archive engine, validation, and local history.
+Foldry 0.1.2 is distributed as a desktop application.
 
 ## Install a release
 
 Open [GitHub Releases](https://github.com/tychh/foldry/releases), choose version
 0.1.2 or newer, and download the package for your platform:
 
-| Platform            | Desktop package             | CLI          |
-| ------------------- | --------------------------- | ------------ |
-| Windows x64         | NSIS installer or MSI       | `foldry.exe` |
-| macOS Intel         | x64 DMG with `Foldry.app`   | `foldry`     |
-| macOS Apple Silicon | ARM64 DMG with `Foldry.app` | `foldry`     |
-| Linux x64           | AppImage or Debian package  | `foldry`     |
+| Platform            | Desktop package             |
+| ------------------- | --------------------------- |
+| Windows x64         | NSIS installer or MSI       |
+| macOS Intel         | x64 DMG with `Foldry.app`   |
+| macOS Apple Silicon | ARM64 DMG with `Foldry.app` |
+| Linux x64           | AppImage or Debian package  |
 
 The initial release candidates may be unsigned. Verify the release checksum when
 one is provided and read the release notes before bypassing an operating-system
@@ -41,9 +40,7 @@ pnpm check
 pnpm desktop:build
 ```
 
-Native packages are written to `target/release/bundle/`. The standalone CLI is
-written to `target/release/foldry` on Unix and
-`target/release/foldry.exe` on Windows.
+Native packages are written to `target/release/bundle/`.
 
 ### Linux
 
@@ -99,22 +96,6 @@ The Default profile excludes only common operating-system metadata. Add presets 
 edit the profile when you also want to ignore language, build, editor, or sensitive
 files.
 
-## Run the CLI
-
-From a source checkout:
-
-```bash
-cargo run -p foldry-cli --bin foldry -- --help
-```
-
-After a release build:
-
-```bash
-target/release/foldry archive ./example --format zip
-```
-
-Read the [CLI guide](cli.md) for configured workflows and automation.
-
 ## Development mode
 
 Start the frontend only:
@@ -130,4 +111,4 @@ pnpm desktop:dev
 ```
 
 The browser frontend uses demo data when it is not running inside Tauri. Filesystem
-dialogs and real operations require the native desktop shell or CLI.
+dialogs and real operations require the native desktop shell.

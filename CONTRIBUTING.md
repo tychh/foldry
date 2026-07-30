@@ -36,7 +36,7 @@ Feature requests should explain the problem or workflow first:
 
 - what you are trying to accomplish;
 - why the current workflow is insufficient;
-- whether the request concerns the desktop application, CLI, or both;
+- which part of the desktop workflow the request concerns;
 - important safety, privacy, or cross-platform constraints;
 - what a successful outcome would look like.
 

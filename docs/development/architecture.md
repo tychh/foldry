@@ -1,8 +1,9 @@
 # Architecture
 
-Foldry is a Rust workspace with a React/Tauri desktop adapter and a standalone CLI.
-Dependencies point inward so filesystem and archive behavior can be tested without
-a webview.
+Foldry is a Rust workspace with a React/Tauri desktop adapter and an internal CLI
+adapter used by development and automated tests. Dependencies point inward so
+filesystem and archive behavior can be tested without a webview. The CLI is not
+part of the 0.1.2 release package or public product surface.
 
 ## Workspace layers
 
@@ -56,9 +57,9 @@ Implements application ports:
 
 ### Adapters
 
-`foldry-cli` and `foldry-tauri` call the same application services. The CLI adds
-human/JSON output and cooperative Ctrl+C. Tauri validates webview requests and
-exposes bounded typed commands.
+`foldry-cli` and `foldry-tauri` call the same application services. The internal
+CLI adds human/JSON output and cooperative Ctrl+C for development and end-to-end
+testing. Tauri validates webview requests and exposes bounded typed commands.
 
 The React frontend owns presentation state only. It does not implement archive,
 profile, scheduler, or persistence rules.

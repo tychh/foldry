@@ -6,12 +6,12 @@ release validation.
 
 ## Current release targets
 
-| Platform | Architecture        | Desktop artifacts           | CLI           |
-| -------- | ------------------- | --------------------------- | ------------- |
-| Windows  | x86-64              | MSI and NSIS                | `.exe`        |
-| macOS    | Intel x86-64        | `.app` and DMG              | Mach-O binary |
-| macOS    | Apple Silicon ARM64 | `.app` and DMG              | Mach-O binary |
-| Linux    | x86-64              | Debian package and AppImage | ELF binary    |
+| Platform | Architecture        | Desktop artifacts           |
+| -------- | ------------------- | --------------------------- |
+| Windows  | x86-64              | MSI and NSIS                |
+| macOS    | Intel x86-64        | `.app` and DMG              |
+| macOS    | Apple Silicon ARM64 | `.app` and DMG              |
+| Linux    | x86-64              | Debian package and AppImage |
 
 The minimum native window is 1024×700. The configured Intel macOS minimum is
 10.15; Apple Silicon requires macOS 11 or newer.

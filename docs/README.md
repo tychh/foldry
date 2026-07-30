@@ -11,7 +11,6 @@ developing it. Start with the shortest document that answers your question.
   history.
 - [Ignore Profiles](ignore-profiles.md) — `.packignore` syntax, presets, and
   examples.
-- [CLI guide](cli.md) — interactive use, automation, JSON output, and exit codes.
 - [Troubleshooting](troubleshooting.md) — common problems and safe recovery.
 - [Platform support](platform-support.md) — supported packages and manual release
   checks.
@@ -24,6 +23,7 @@ developing it. Start with the shortest document that answers your question.
 - [Security model](development/security.md)
 - [Testing and performance](development/testing.md)
 - [Release process](development/releasing.md)
+- [Internal CLI reference](development/cli.md)
 
 ## Documentation policy
 

@@ -18,17 +18,6 @@ body:
       required: true
 
   - type: dropdown
-    id: surface
-    attributes:
-      label: Interface
-      options:
-        - Desktop application
-        - CLI
-        - Both
-    validations:
-      required: true
-
-  - type: dropdown
     id: operating-system
     attributes:
       label: Operating system

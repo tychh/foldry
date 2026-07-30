@@ -99,15 +99,4 @@ back to Default.
 
 The editor reports malformed metadata, unsupported versions, invalid patterns,
 duplicate preset IDs, nested blocks, mismatched markers, and unclosed blocks.
-
-The CLI can validate a file without installing it:
-
-```bash
-foldry profile validate ./example.packignore
-```
-
-For machine-readable diagnostics:
-
-```bash
-foldry --json profile validate ./example.packignore
-```
+Resolve all reported errors before using the profile in Preview or an Action.

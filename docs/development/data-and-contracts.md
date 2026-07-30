@@ -5,7 +5,8 @@ Writes are atomic and versioned.
 
 ## Platform directories
 
-Use `foldry config path` to see resolved locations on the current machine.
+The internal CLI command `foldry config path` can show resolved locations in a
+development checkout.
 
 | Area   | Contents                                                         |
 | ------ | ---------------------------------------------------------------- |
@@ -13,8 +14,8 @@ Use `foldry config path` to see resolved locations on the current machine.
 | Data   | `app.db`, crash reports                                          |
 | Cache  | streaming Preview/Run manifests                                  |
 
-Desktop and CLI use the same directories. Development tests can override each
-root with hidden CLI flags.
+The desktop and internal CLI adapter use the same directories. Development tests
+can override each root with hidden CLI flags.
 
 ## Settings
 
@@ -105,4 +106,4 @@ instead of accepting an arbitrary path from the webview.
 - Unknown fields in supported versions are preserved.
 - Unknown action types are preserved but execution-blocked.
 - Database migrations never silently skip a version.
-- The JSON CLI envelope is version 1.
+- The internal JSON CLI envelope is version 1.

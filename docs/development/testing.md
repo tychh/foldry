@@ -39,7 +39,8 @@ cargo test -p foldry-cli
 - `foldry-core`: profile matching, scanner rules, output planning, archive writers;
 - `foldry-application`: validation, effective profiles, queue/state transitions;
 - `foldry-storage`: persistence, migrations, recovery, Archive executor;
-- `foldry-cli`: end-to-end commands, JSON envelope, exit codes, cancellation;
+- internal `foldry-cli`: end-to-end commands, JSON envelope, exit codes,
+  cancellation;
 - frontend: component behavior, localization, themes, folder browser, queue controls;
 - Tauri: explicit command surface, path validation, startup bootstrap.
 

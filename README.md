@@ -15,10 +15,10 @@
   <img src="https://img.shields.io/badge/version-0.1.2-2f81f7" alt="Version 0.1.2">
 </p>
 
-Foldry is a local-first desktop application and CLI for processing folders with
-reusable Ignore Profiles. It is useful when a repository, project, or personal
-folder must be moved with files that do not belong in Git or a public cloud, while
-generated output and operating-system clutter should stay behind.
+Foldry is a local-first desktop application for processing folders with reusable
+Ignore Profiles. It is useful when a repository, project, or personal folder must
+be moved with files that do not belong in Git or a public cloud, while generated
+output and operating-system clutter should stay behind.
 
 Version 0.1.2 focuses on verified local archives. Network synchronization is not
 part of this release.
@@ -31,9 +31,8 @@ part of this release.
   which rule made the decision.
 - **Archives are published safely.** Foldry writes a temporary file, verifies it,
   and only then replaces or publishes the destination.
-- **Runs are observable.** The queue, progress, warnings, history, logs, and
-  immutable repeat snapshots are available in both the desktop application and
-  CLI.
+- **Runs are observable.** The desktop application shows the queue, progress,
+  warnings, history, logs, and immutable repeat snapshots.
 - **Your data stays local.** Foldry has no telemetry, cloud client, account system,
   or remote crash upload.
 
@@ -67,8 +66,7 @@ Download the package for your platform from
 
 - Windows x64: NSIS installer or MSI;
 - macOS Intel or Apple Silicon: architecture-specific DMG;
-- Linux x64: AppImage or Debian package;
-- standalone `foldry` CLI binaries are built from the same source.
+- Linux x64: AppImage or Debian package.
 
 Release candidates may initially be unsigned. Read the release notes and your
 operating system's warning before installing. See
@@ -92,31 +90,6 @@ Foldry supports ZIP, TAR.GZ, and TAR.ZST. ZIP is the broadest cross-platform
 choice; TAR.GZ is widely supported on Unix-like systems; TAR.ZST is typically the
 fastest and smallest but may require an external extractor.
 
-## CLI
-
-The CLI uses the same profiles, folders, archive engine, history, and safety
-checks as the desktop application.
-
-Create a one-shot archive without adding the folder to the desktop workspace:
-
-```bash
-foldry archive ./project \
-  --profile Default \
-  --format tar-zst \
-  --compression balanced \
-  --full-verify \
-  --checksum
-```
-
-Automations can add `--json` to receive one stable versioned JSON object:
-
-```bash
-foldry --json history list --limit 10
-```
-
-See the [CLI guide](docs/cli.md) for command groups, examples, JSON output, and
-exit codes.
-
 ## Documentation
 
 | I want to…                      | Read                                                    |
@@ -124,7 +97,6 @@ exit codes.
 | Install or build Foldry         | [Getting started](docs/getting-started.md)              |
 | Understand the desktop workflow | [User guide](docs/user-guide.md)                        |
 | Write filtering rules           | [Ignore Profiles](docs/ignore-profiles.md)              |
-| Automate Foldry                 | [CLI guide](docs/cli.md)                                |
 | Diagnose a problem              | [Troubleshooting](docs/troubleshooting.md)              |
 | Check platform support          | [Platform support](docs/platform-support.md)            |
 | Report a security issue         | [Security policy](SECURITY.md)                          |
@@ -145,7 +117,8 @@ be reported privately according to the [security policy](SECURITY.md).
 ## Development
 
 The workspace uses Rust 1.97.1, Node.js 24.18.0, pnpm 11.17.0, React, Mantine,
-Tauri 2, SQLite, and a layered Rust core shared by the desktop and CLI adapters.
+Tauri 2, SQLite, and a layered Rust core. An internal CLI adapter is retained for
+development and automated testing but is not distributed in version 0.1.2.
 
 ```bash
 corepack enable

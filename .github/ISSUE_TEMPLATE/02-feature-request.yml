@@ -14,7 +14,6 @@ body:
       label: Area
       options:
         - Desktop application
-        - CLI
         - Ignore Profiles
         - Archive processing
         - Cross-platform behavior

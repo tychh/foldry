@@ -1,12 +1,19 @@
-# CLI guide
+# Internal CLI reference
+
+The `foldry-cli` crate is a development and automated-testing adapter. Version
+0.1.2 does not include it in desktop installers or publish it as a standalone
+download, and its command surface is not yet a supported public interface or
+compatibility promise.
 
 `foldry` exposes the same application services as the desktop interface. Commands
 and machine-facing values are English.
 
 ```bash
-foldry --help
-foldry <command> --help
+cargo run -p foldry-cli --bin foldry -- --help
+cargo run -p foldry-cli --bin foldry -- <command> --help
 ```
+
+The shorter `foldry` form used below assumes a locally built development binary.
 
 ## One-shot archive
 

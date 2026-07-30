@@ -1,14 +1,7 @@
 # Troubleshooting
 
-Start with:
-
-```bash
-foldry config path
-foldry config show
-```
-
-These commands show the exact configuration, data, cache, and database locations
-used by the desktop application and CLI.
+Start with the visible error, the affected Folder or Action, and its latest entry
+in Run history. Export sanitized logs from the run details when available.
 
 ## A folder cannot be added
 
@@ -60,28 +53,8 @@ Default.
 
 ## A folder stays hidden
 
-Use the remembered-folders dialog or:
-
-```bash
-foldry folder remembered
-```
-
-Adding the same source path again also restores its existing configuration.
-
-## Reset isolated development state
-
-Do not delete normal application data while diagnosing a problem. Start an
-isolated CLI layout instead:
-
-```bash
-foldry \
-  --config-dir /tmp/foldry-test/config \
-  --data-dir /tmp/foldry-test/data \
-  --cache-dir /tmp/foldry-test/cache \
-  config path
-```
-
-These override flags are intentionally hidden from normal help.
+Use the remembered-folders dialog. Adding the same source path again also
+restores its existing configuration.
 
 ## Reporting a problem
 
@@ -89,9 +62,9 @@ Include:
 
 - Foldry version and installation type;
 - operating system and filesystem;
-- the command or UI sequence;
+- the shortest UI sequence that reproduces the problem;
 - archive format and conflict/verification settings;
-- exported logs or `foldry history logs <run-id>`;
+- sanitized logs exported from Run history;
 - whether a previous archive, `.part`, or reservation file remained.
 
 Do not attach real secrets or personal source paths to a public issue. Create a
