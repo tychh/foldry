@@ -1,6 +1,8 @@
 use std::{
+    collections::HashMap,
     fs, io,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock, Weak},
 };
 
 use atomicwrites::{AllowOverwrite, AtomicFile};
@@ -355,6 +357,10 @@ fn read_optional(path: &Path) -> Result<Option<String>, RepositoryError> {
 }
 
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), RepositoryError> {
+    let write_lock = atomic_write_lock(path);
+    let _write_guard = write_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let parent = path
         .parent()
         .ok_or_else(|| RepositoryError::new("repository path has no parent"))?;
@@ -365,6 +371,23 @@ fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), RepositoryError> {
             file.sync_all()
         })
         .map_err(repository_error)
+}
+
+fn atomic_write_lock(path: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+
+    let mut locks = LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
+        return lock;
+    }
+
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
+    lock
 }
 
 fn repository_error(error: impl std::fmt::Display) -> RepositoryError {
