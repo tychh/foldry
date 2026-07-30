@@ -1,0 +1,93 @@
+name: Bug report
+description: Report a reproducible problem with Foldry
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve Foldry. Please remove private paths, credentials, personal data, and real secrets from logs and screenshots.
+
+  - type: input
+    id: version
+    attributes:
+      label: Foldry version
+      description: The version shown in About Foldry and the package type you installed.
+      placeholder: "0.1.2, DMG"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Interface
+      options:
+        - Desktop application
+        - CLI
+        - Both
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+    validations:
+      required: true
+
+  - type: input
+    id: system-details
+    attributes:
+      label: System details
+      description: Include the OS version, CPU architecture, filesystem, and installation package when relevant.
+      placeholder: "macOS 15, Intel, APFS, DMG"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the actual behavior and any visible error.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide the shortest reliable sequence that triggers the problem.
+      placeholder: |
+        1. Add a folder...
+        2. Configure an action...
+        3. Run the action...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should Foldry have done instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add sanitized logs, screenshots, archive settings, or details about a disposable test folder when useful.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: I removed private paths, credentials, personal data, and real secrets from the report.
+          required: true
