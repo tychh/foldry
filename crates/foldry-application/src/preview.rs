@@ -204,41 +204,23 @@ mod tests {
     #[test]
     fn key_changes_with_profile_source_metadata_and_action() {
         let directory = tempfile::tempdir().expect("temp directory");
+        let source = directory.path().join("source");
+        fs::write(&source, "initial").expect("write initial source");
         let folder_id = FolderId::new();
         let action_id = ActionId::new();
-        let first = PreviewCacheKey::build(
-            folder_id,
-            action_id,
-            "profile-a",
-            directory.path(),
-            &action(true),
-        )
-        .expect("first key");
-        let changed_profile = PreviewCacheKey::build(
-            folder_id,
-            action_id,
-            "profile-b",
-            directory.path(),
-            &action(true),
-        )
-        .expect("profile");
-        let changed_action = PreviewCacheKey::build(
-            folder_id,
-            action_id,
-            "profile-a",
-            directory.path(),
-            &action(false),
-        )
-        .expect("action");
-        fs::write(directory.path().join("new-file"), "data").expect("write source");
-        let changed_source = PreviewCacheKey::build(
-            folder_id,
-            action_id,
-            "profile-a",
-            directory.path(),
-            &action(true),
-        )
-        .expect("source");
+        let first =
+            PreviewCacheKey::build(folder_id, action_id, "profile-a", &source, &action(true))
+                .expect("first key");
+        let changed_profile =
+            PreviewCacheKey::build(folder_id, action_id, "profile-b", &source, &action(true))
+                .expect("profile");
+        let changed_action =
+            PreviewCacheKey::build(folder_id, action_id, "profile-a", &source, &action(false))
+                .expect("action");
+        fs::write(&source, "changed source metadata").expect("change source");
+        let changed_source =
+            PreviewCacheKey::build(folder_id, action_id, "profile-a", &source, &action(true))
+                .expect("source");
 
         assert_ne!(first, changed_profile);
         assert_ne!(first, changed_action);
