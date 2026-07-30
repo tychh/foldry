@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/tychh/foldry/security/advisories/new
+    about: Report security issues privately. Do not include vulnerabilities in public issues.
+  - name: Feedback and contribution policy
+    url: https://github.com/tychh/foldry/blob/main/CONTRIBUTING.md
+    about: Read what reports are welcome and why Foldry is not accepting pull requests.
