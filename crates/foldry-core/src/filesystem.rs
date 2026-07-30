@@ -575,17 +575,14 @@ fn file_identity(metadata: &fs::Metadata) -> Option<FileIdentity> {
 
 #[cfg(not(unix))]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct FileIdentity {
-    modified: u64,
-    length: u64,
-}
+struct FileIdentity;
 
+/// Windows links, junctions, and mount-point reparse entries are never traversed,
+/// so an ordinary directory tree cannot cycle. Avoid approximate metadata keys:
+/// equal timestamps and lengths are common for distinct directories.
 #[cfg(not(unix))]
-fn file_identity(metadata: &fs::Metadata) -> Option<FileIdentity> {
-    Some(FileIdentity {
-        modified: modified_unix_nanos(metadata)?,
-        length: metadata.len(),
-    })
+fn file_identity(_metadata: &fs::Metadata) -> Option<FileIdentity> {
+    None
 }
 
 #[cfg(unix)]
