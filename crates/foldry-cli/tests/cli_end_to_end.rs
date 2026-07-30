@@ -1,9 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
-    thread,
-    time::Duration,
+    process::{Command, Output},
 };
 
 use serde_json::Value;
@@ -252,11 +250,11 @@ fn sigint_uses_cooperative_stop_and_leaves_no_final_archive() {
             "--format",
             "zip",
         ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < deadline
         && !fs::read_dir(&output_directory).unwrap().any(|entry| {
             entry
@@ -266,7 +264,7 @@ fn sigint_uses_cooperative_stop_and_leaves_no_final_archive() {
                 .ends_with(".foldry-reserve")
         })
     {
-        thread::sleep(Duration::from_millis(25));
+        std::thread::sleep(std::time::Duration::from_millis(25));
     }
     let status = Command::new("kill")
         .args(["-INT", &child.id().to_string()])
