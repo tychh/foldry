@@ -1,0 +1,68 @@
+name: Feature request
+description: Suggest a workflow or capability for Foldry
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the problem or workflow first. A proposed implementation is not required, and Foldry is not currently accepting code contributions.
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Area
+      options:
+        - Desktop application
+        - CLI
+        - Ignore Profiles
+        - Archive processing
+        - Cross-platform behavior
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: workflow
+    attributes:
+      label: What are you trying to accomplish?
+      description: Describe the real task or workflow, including why the current behavior is insufficient.
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Explain what a successful result would look like from a user's perspective.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Current workaround or alternatives
+      description: How do you handle this today, if at all?
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Important constraints
+      description: Note relevant privacy, safety, performance, compatibility, or platform considerations.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Mockups, examples, and comparisons with other tools are welcome.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for a similar request.
+          required: true
+        - label: I understand that feature requests may be declined or deferred based on product direction and maintenance capacity.
+          required: true
