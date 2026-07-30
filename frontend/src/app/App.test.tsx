@@ -400,7 +400,9 @@ describe("App shell", () => {
     const archiveHelp = await screen.findByRole("dialog", {
       name: "How Archive works",
     });
-    expect(within(archiveHelp).getByText("Archive formats")).toBeVisible();
+    await waitFor(() =>
+      expect(within(archiveHelp).getByText("Archive formats")).toBeVisible(),
+    );
     expect(within(archiveHelp).getByText("ZIP")).toBeVisible();
     expect(within(archiveHelp).getByText("TAR.GZ")).toBeVisible();
     expect(within(archiveHelp).getByText("TAR.ZST")).toBeVisible();

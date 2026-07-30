@@ -36,3 +36,8 @@ Object.defineProperty(Element.prototype, "scrollIntoView", {
   configurable: true,
   value: () => undefined,
 });
+
+Object.defineProperty(Range.prototype, "getClientRects", {
+  configurable: true,
+  value: () => [] as unknown as DOMRectList,
+});

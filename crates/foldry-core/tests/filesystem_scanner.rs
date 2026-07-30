@@ -1,9 +1,9 @@
-use std::{fs, path::Path};
+use std::fs;
 
 use foldry_core::{
     CancellationToken, CompiledProfile, FileSystemBrowser, FileSystemCaseSensitivity,
-    FileSystemObjectKind, FileSystemScanner, ScanDisposition, ScanNotice, ScanSink, ScanSinkError,
-    ScannedEntry, parse_profile,
+    FileSystemScanner, ScanDisposition, ScanNotice, ScanSink, ScanSinkError, ScannedEntry,
+    parse_profile,
 };
 
 #[derive(Default)]
@@ -101,8 +101,11 @@ fn links_and_special_files_are_not_traversed() {
         .iter()
         .find(|entry| entry.relative_path == "link")
         .expect("link entry");
-    assert_eq!(link.kind, FileSystemObjectKind::Symlink);
-    assert_eq!(link.link_target.as_deref(), Some(Path::new("target")));
+    assert_eq!(link.kind, foldry_core::FileSystemObjectKind::Symlink);
+    assert_eq!(
+        link.link_target.as_deref(),
+        Some(std::path::Path::new("target"))
+    );
     assert!(
         !sink
             .entries
@@ -156,7 +159,11 @@ fn browser_locations_include_existing_home_shortcuts() {
     assert_eq!(roots[1].name, "Documents");
     assert_eq!(roots[2].name, "Downloads");
     #[cfg(unix)]
-    assert!(roots.iter().any(|root| root.path == Path::new("/")));
+    assert!(
+        roots
+            .iter()
+            .any(|root| root.path == std::path::Path::new("/"))
+    );
     #[cfg(windows)]
     assert!(
         roots
