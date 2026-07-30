@@ -1,2 +1,21 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Keep text files identical on every development and CI platform.
+* text=auto eol=lf
+
+# Never apply text normalization to binary assets and build artifacts.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.pdf binary
+*.dmg binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.zst binary
+*.msi binary
+*.exe binary
+*.db binary
+*.sqlite binary
