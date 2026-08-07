@@ -8,6 +8,7 @@ import type {
 import {
   applyRunEvent,
   reconcileBootstrapAfterRunEvents,
+  reconcileSchedulerSnapshot,
 } from "./DesktopDataProvider";
 
 describe("DesktopDataProvider run events", () => {
@@ -69,20 +70,70 @@ describe("DesktopDataProvider run events", () => {
       active_runs: [stopping],
       recent_runs: [{ ...stopping }],
     } as unknown as BootstrapSnapshot;
-    const current = {
-      active_runs: [stopped],
-      recent_runs: [{ ...stopped }],
-    } as unknown as BootstrapSnapshot;
-
     const reconciled = reconcileBootstrapAfterRunEvents(
       stale,
-      current,
-      new Set([stopped.run_id]),
+      new Map([
+        [
+          stopped.run_id,
+          {
+            run_id: stopped.run_id,
+            occurred_at: stopped.finished_at,
+            sequence: 4,
+            event: { type: "state_changed", state: "stopped" },
+          } as unknown as RunEvent,
+        ],
+      ]),
     );
 
     expect(reconciled.active_runs[0]?.state).toBe("stopped");
     expect(reconciled.recent_runs[0]?.state).toBe("stopped");
     expect(reconciled.active_runs[0]?.finished_at).toBe(stopped.finished_at);
+  });
+
+  it("replays a completion received before a new run enters the snapshot", () => {
+    const running = run("running", null);
+    const completed = {
+      run_id: running.run_id,
+      occurred_at: "2026-07-30T10:01:00Z",
+      sequence: 4,
+      event: {
+        type: "completed",
+        summary: {
+          outcome: "succeeded",
+        },
+      },
+    } as unknown as RunEvent;
+    const stale = {
+      active_runs: [running],
+      recent_runs: [{ ...running }],
+    } as unknown as BootstrapSnapshot;
+
+    const reconciled = reconcileBootstrapAfterRunEvents(
+      stale,
+      new Map([[running.run_id, completed]]),
+    );
+
+    expect(reconciled.active_runs[0]?.state).toBe("succeeded");
+    expect(reconciled.recent_runs[0]?.state).toBe("succeeded");
+    expect(reconciled.active_runs[0]?.summary?.outcome).toBe("succeeded");
+  });
+
+  it("repairs a missed terminal event from the scheduler snapshot", () => {
+    const stale = run("running", null);
+    const succeeded = run("succeeded", "2026-07-30T10:01:00Z");
+    const current = {
+      active_runs: [stale],
+      recent_runs: [{ ...stale }],
+    } as unknown as BootstrapSnapshot;
+
+    const reconciled = reconcileSchedulerSnapshot(
+      current,
+      [succeeded],
+      new Map(),
+    );
+
+    expect(reconciled.active_runs[0]?.state).toBe("succeeded");
+    expect(reconciled.recent_runs[0]?.state).toBe("succeeded");
   });
 });
 

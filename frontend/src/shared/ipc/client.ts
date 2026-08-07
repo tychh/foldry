@@ -61,6 +61,7 @@ export type DesktopCommand =
   | "save_plan"
   | "run_action"
   | "run_folder"
+  | "scheduler_snapshot"
   | "pause_run"
   | "resume_run"
   | "stop_run"
@@ -565,6 +566,8 @@ class BrowserPreviewClient implements DesktopClient {
       } satisfies PreviewPage;
     } else if (name === "cancel_preview") {
       result = true;
+    } else if (name === "scheduler_snapshot") {
+      result = structuredClone(this.snapshot.active_runs);
     } else if (name === "history_page") {
       const offset = Number(args.offset ?? 0);
       const limit = Number(args.limit ?? 50);

@@ -3,39 +3,47 @@
 mod ipc;
 
 #[cfg(target_os = "macos")]
+use tauri::Emitter;
+use tauri::Manager;
+#[cfg(target_os = "macos")]
 use tauri::menu::{HELP_SUBMENU_ID, MenuItem};
-use tauri::{Emitter, Manager};
 
+#[cfg(target_os = "macos")]
 const ABOUT_MENU_ID: &str = "foldry-about";
+#[cfg(target_os = "macos")]
 const HELP_MENU_ID: &str = "foldry-help";
+#[cfg(target_os = "macos")]
 const ABOUT_MENU_EVENT: &str = "foldry://open-about";
+#[cfg(target_os = "macos")]
 const HELP_MENU_EVENT: &str = "foldry://open-help";
 
 /// Starts the Foldry desktop application.
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_opener::Builder::new()
                 .open_js_links_on_click(false)
                 .build(),
-        )
-        .on_menu_event(|app, event| {
-            let frontend_event = match event.id().as_ref() {
-                ABOUT_MENU_ID => Some(ABOUT_MENU_EVENT),
-                HELP_MENU_ID => Some(HELP_MENU_EVENT),
-                _ => None,
-            };
+        );
+    #[cfg(target_os = "macos")]
+    let builder = builder.on_menu_event(|app, event| {
+        let frontend_event = match event.id().as_ref() {
+            ABOUT_MENU_ID => Some(ABOUT_MENU_EVENT),
+            HELP_MENU_ID => Some(HELP_MENU_EVENT),
+            _ => None,
+        };
 
-            if let Some(frontend_event) = frontend_event
-                && let Some(window) = app.get_webview_window("main")
-            {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-                let _ = window.emit(frontend_event, ());
-            }
-        })
+        if let Some(frontend_event) = frontend_event
+            && let Some(window) = app.get_webview_window("main")
+        {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+            let _ = window.emit(frontend_event, ());
+        }
+    });
+    builder
         .setup(|app| {
             let state = ipc::DesktopState::open(app.handle()).map_err(std::io::Error::other)?;
             app.manage(state);

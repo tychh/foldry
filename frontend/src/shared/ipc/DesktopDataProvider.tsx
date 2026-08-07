@@ -49,6 +49,13 @@ type DesktopDataContextValue = {
 
 const DesktopDataContext = createContext<DesktopDataContextValue | null>(null);
 
+type VersionedRunEvent = {
+  revision: number;
+  event: RunEvent;
+};
+
+const RUN_RECONCILIATION_INTERVAL_MS = 1_000;
+
 export function DesktopDataProvider({ children }: PropsWithChildren) {
   const [client] = useState<DesktopClient>(createDesktopClient);
   const [sessionStartedAt] = useState(Date.now);
@@ -58,7 +65,7 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
   const [progressByRun, setProgressByRun] = useState<
     ReadonlyMap<string, ProgressSnapshot>
   >(() => new Map());
-  const runEventRevisionRef = useRef(new Map<string, number>());
+  const runEventRevisionRef = useRef(new Map<string, VersionedRunEvent>());
 
   const applyEvent = useCallback((event: RunEvent) => {
     if (
@@ -66,7 +73,14 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
       event.event.type === "completed"
     ) {
       const revisions = runEventRevisionRef.current;
-      revisions.set(event.run_id, (revisions.get(event.run_id) ?? 0) + 1);
+      const previous = revisions.get(event.run_id);
+      if (previous && previous.event.sequence >= event.sequence) {
+        return;
+      }
+      revisions.set(event.run_id, {
+        revision: (previous?.revision ?? 0) + 1,
+        event,
+      });
     }
     if (event.event.type === "progress") {
       const progress = event.event.progress;
@@ -82,20 +96,17 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
   }, []);
 
   const reload = useCallback(async () => {
-    const revisionsAtStart = new Map(runEventRevisionRef.current);
+    const revisionsAtStart = runEventRevisions(runEventRevisionRef.current);
     setConnection((current) =>
       current === "loading" ? "loading" : "reconnecting",
     );
     try {
       const next = await client.bootstrap();
-      setSnapshot((current) =>
-        current
-          ? reconcileBootstrapAfterRunEvents(
-              next,
-              current,
-              changedRunIds(revisionsAtStart, runEventRevisionRef.current),
-            )
-          : next,
+      setSnapshot(() =>
+        reconcileBootstrapAfterRunEvents(
+          next,
+          changedRunEvents(revisionsAtStart, runEventRevisionRef.current),
+        ),
       );
       setError(null);
       setConnection("connected");
@@ -108,11 +119,17 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     let active = true;
     let dispose: (() => void) | undefined;
+    const revisionsAtStart = runEventRevisions(runEventRevisionRef.current);
 
     void client.bootstrap().then(
       (next) => {
         if (active) {
-          setSnapshot(next);
+          setSnapshot(() =>
+            reconcileBootstrapAfterRunEvents(
+              next,
+              changedRunEvents(revisionsAtStart, runEventRevisionRef.current),
+            ),
+          );
           setError(null);
           setConnection("connected");
         }
@@ -150,6 +167,51 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
       document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [applyEvent, client, reload]);
+
+  const hasNonTerminalRuns =
+    snapshot?.active_runs.some((run) => !isTerminalRunState(run.state)) ??
+    false;
+
+  useEffect(() => {
+    if (!hasNonTerminalRuns || client.preview) return;
+    let active = true;
+    let refreshing = false;
+
+    const refreshRuns = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      const revisionsAtStart = runEventRevisions(runEventRevisionRef.current);
+      try {
+        const runs = await client.command<RunRecord[]>("scheduler_snapshot");
+        if (!active) return;
+        setError(null);
+        setSnapshot((current) =>
+          current
+            ? reconcileSchedulerSnapshot(
+                current,
+                runs,
+                changedRunEvents(revisionsAtStart, runEventRevisionRef.current),
+              )
+            : current,
+        );
+      } catch (caught) {
+        if (active) {
+          setError(normalizeIpcError(caught));
+        }
+      } finally {
+        refreshing = false;
+      }
+    };
+
+    const interval = window.setInterval(
+      () => void refreshRuns(),
+      RUN_RECONCILIATION_INTERVAL_MS,
+    );
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [client, hasNonTerminalRuns]);
 
   const command = useCallback(
     async <T,>(
@@ -274,45 +336,48 @@ export function applyRunEvent(
 
 export function reconcileBootstrapAfterRunEvents(
   next: BootstrapSnapshot,
-  current: BootstrapSnapshot,
-  changedRunIds: ReadonlySet<string>,
+  changedEvents: ReadonlyMap<string, RunEvent>,
 ): BootstrapSnapshot {
-  if (changedRunIds.size === 0) {
-    return next;
+  let reconciled = next;
+  for (const event of changedEvents.values()) {
+    reconciled = applyRunEvent(reconciled, event);
   }
-  return {
-    ...next,
-    active_runs: preserveChangedRuns(
-      next.active_runs,
-      current.active_runs,
-      changedRunIds,
-    ),
-    recent_runs: preserveChangedRuns(
-      next.recent_runs,
-      current.recent_runs,
-      changedRunIds,
-    ),
-  };
+  return reconciled;
 }
 
-function preserveChangedRuns(
-  next: RunRecord[],
-  current: RunRecord[],
-  changedRunIds: ReadonlySet<string>,
-): RunRecord[] {
-  const currentById = new Map(current.map((run) => [run.run_id, run]));
-  return next.map((run) =>
-    changedRunIds.has(run.run_id) ? (currentById.get(run.run_id) ?? run) : run,
+export function reconcileSchedulerSnapshot(
+  current: BootstrapSnapshot,
+  runs: RunRecord[],
+  changedEvents: ReadonlyMap<string, RunEvent>,
+): BootstrapSnapshot {
+  const scheduledById = new Map(runs.map((run) => [run.run_id, run]));
+  return reconcileBootstrapAfterRunEvents(
+    {
+      ...current,
+      active_runs: runs,
+      recent_runs: current.recent_runs.map(
+        (run) => scheduledById.get(run.run_id) ?? run,
+      ),
+    },
+    changedEvents,
   );
 }
 
-function changedRunIds(
+function runEventRevisions(
+  events: ReadonlyMap<string, VersionedRunEvent>,
+): Map<string, number> {
+  return new Map([...events].map(([runId, event]) => [runId, event.revision]));
+}
+
+function changedRunEvents(
   before: ReadonlyMap<string, number>,
-  after: ReadonlyMap<string, number>,
-): Set<string> {
-  return new Set(
-    [...after].flatMap(([runId, revision]) =>
-      revision === before.get(runId) ? [] : [runId],
+  after: ReadonlyMap<string, VersionedRunEvent>,
+): Map<string, RunEvent> {
+  return new Map(
+    [...after].flatMap(([runId, versioned]) =>
+      versioned.revision === before.get(runId)
+        ? []
+        : [[runId, versioned.event] as const],
     ),
   );
 }
