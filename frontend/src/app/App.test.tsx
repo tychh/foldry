@@ -60,9 +60,11 @@ describe("App shell", () => {
 
     await user.click(aboutButton);
     const about = await screen.findByRole("dialog", { name: "About Foldry" });
-    expect(
-      within(about).getByRole("heading", { name: "Foldry" }),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        within(about).getByRole("heading", { name: "Foldry" }),
+      ).toBeVisible(),
+    );
     expect(
       within(about).getByText(
         "Foldry helps you prepare folders for safe, repeatable transfer or backup without sending them through a cloud service.",
@@ -91,11 +93,13 @@ describe("App shell", () => {
 
     await user.click(helpButton);
     const help = await screen.findByRole("dialog", { name: "Foldry Help" });
-    expect(
-      within(help).getByText(
-        "Foldry processes folders individually or in batches, applying Ignore Profiles to keep unnecessary files and directories out of each operation.",
-      ),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        within(help).getByText(
+          "Foldry processes folders individually or in batches, applying Ignore Profiles to keep unnecessary files and directories out of each operation.",
+        ),
+      ).toBeVisible(),
+    );
     expect(within(help).getByText("Start with folders")).toBeVisible();
     expect(within(help).getByText("Create verified archives")).toBeVisible();
     expect(
