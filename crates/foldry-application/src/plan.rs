@@ -7,6 +7,7 @@ use foldry_core::{
     ActionId, ActionVersion, ArchiveActionSpec, ArchiveOutputDirectory, Extensions, FolderId,
     ProfileId,
 };
+use jiff::Timestamp;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::Error as DeError,
@@ -25,7 +26,8 @@ pub struct PlanVersion(pub u16);
 
 impl PlanVersion {
     pub const V2: Self = Self(2);
-    pub const CURRENT: Self = Self::V2;
+    pub const V3: Self = Self(3);
+    pub const CURRENT: Self = Self::V3;
 }
 
 impl Default for PlanVersion {
@@ -49,6 +51,7 @@ pub struct Plan {
 pub struct Folder {
     pub id: FolderId,
     pub source: PathBuf,
+    pub created_at: Timestamp,
     pub listed: bool,
     pub enabled: bool,
     pub default_profile_id: ProfileId,
@@ -273,6 +276,7 @@ impl ContractValidation for Plan {
                 &[
                     "id",
                     "source",
+                    "created_at",
                     "listed",
                     "enabled",
                     "default_profile_id",
@@ -479,11 +483,12 @@ mod tests {
     #[test]
     fn future_action_version_is_an_execution_blocker() {
         let plan = Plan {
-            version: PlanVersion::V2,
+            version: PlanVersion::V3,
             name: "Active".into(),
             folders: vec![Folder {
                 id: FolderId::new(),
                 source: PathBuf::from("/source"),
+                created_at: "1970-01-01T00:00:00Z".parse().unwrap(),
                 listed: true,
                 enabled: true,
                 default_profile_id: ProfileId::new(),

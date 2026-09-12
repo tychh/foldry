@@ -6,6 +6,7 @@ import {
   parsePresetDefinition,
   presetState,
   removePreset,
+  resolvePresetDefinitions,
   updatePreset,
 } from "./profilePresets";
 
@@ -58,5 +59,30 @@ describe("profile preset edits", () => {
 
     expect(diff.removed).toContain("target/debug/");
     expect(diff.added).toContain("target/");
+  });
+
+  it("flattens resource-only includes and upgrades dynamic profiles to v2", () => {
+    const definitions = resolvePresetDefinitions([
+      {
+        id: "component",
+        filename: "component.packignore",
+        text: "# @preset-id component\n# @preset-version 1\n# @preset-name Component\n# @preset-description Component.\n# @preset-safety safe\n\ntarget/\n",
+        resource_version: 1,
+      },
+      {
+        id: "development",
+        filename: "development.packignore",
+        text: "# @preset-id development\n# @preset-version 1\n# @preset-name Development\n# @preset-description Dynamic.\n# @preset-safety safe\n# @preset-include id=component\n\n# @rule-source gitignore mode=exclude-unignored nested=true\n",
+        resource_version: 1,
+      },
+    ]);
+    const development = definitions.find(
+      (preset) => preset.id === "development",
+    )!;
+    const installed = insertPreset(profile, development);
+
+    expect(development.content).toContain("target/");
+    expect(installed).toContain("# @profile-version 2");
+    expect(installed).toContain("# @rule-source gitignore");
   });
 });

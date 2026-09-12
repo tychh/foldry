@@ -10,6 +10,7 @@ export type PresetDefinition = {
   description: string;
   sensitive: boolean;
   content: string;
+  includes: string[];
 };
 
 type PresetBlock = {
@@ -37,10 +38,44 @@ export function parsePresetDefinition(preset: StoredPreset): PresetDefinition {
     name: metadata.get("name") ?? preset.id,
     description: metadata.get("description") ?? preset.filename,
     sensitive: metadata.get("safety") === "sensitive",
+    includes: header.flatMap((line) => {
+      const match = /^# @preset-include id=([a-z0-9]+(?:-[a-z0-9]+)*)$/.exec(
+        line,
+      );
+      return match?.[1] ? [match[1]] : [];
+    }),
     content: normalizeContent(
       blank < 0 ? "" : lines.slice(blank + 1).join("\n"),
     ),
   };
+}
+
+export function resolvePresetDefinitions(
+  presets: StoredPreset[],
+): PresetDefinition[] {
+  const parsed = presets.map(parsePresetDefinition);
+  const byId = new Map(parsed.map((preset) => [preset.id, preset]));
+  const resolve = (
+    preset: PresetDefinition,
+    stack: string[],
+  ): PresetDefinition => {
+    if (stack.includes(preset.id)) {
+      throw new Error(
+        `Preset include cycle: ${[...stack, preset.id].join(" -> ")}`,
+      );
+    }
+    return preset.includes.reduce((resolved, includedId) => {
+      const included = byId.get(includedId);
+      if (!included) throw new Error(`Unknown included preset: ${includedId}`);
+      const component = resolve(included, [...stack, preset.id]);
+      return {
+        ...resolved,
+        content: `${resolved.content}${component.content}`,
+        sensitive: resolved.sensitive || component.sensitive,
+      };
+    }, preset);
+  };
+  return parsed.map((preset) => resolve(preset, []));
 }
 
 export function presetState(
@@ -68,6 +103,9 @@ export function insertPreset(
     return profileText;
   }
   let prefix = profileText.replaceAll("\r\n", "\n").replace(/\s*$/, "\n\n");
+  if (preset.content.includes("# @rule-source ")) {
+    prefix = prefix.replace("# @profile-version 1", "# @profile-version 2");
+  }
   if (!prefix.endsWith("\n\n")) {
     prefix += "\n";
   }
@@ -98,7 +136,11 @@ export function updatePreset(
   if (!block) {
     return insertPreset(profileText, preset);
   }
-  return `${profileText.slice(0, block.start)}${renderBlock(preset)}${profileText.slice(block.end)}`;
+  let updated = `${profileText.slice(0, block.start)}${renderBlock(preset)}${profileText.slice(block.end)}`;
+  if (preset.content.includes("# @rule-source ")) {
+    updated = updated.replace("# @profile-version 1", "# @profile-version 2");
+  }
+  return updated;
 }
 
 export function changedLines(before: string, after: string) {

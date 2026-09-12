@@ -8,7 +8,7 @@ fn shipped_catalog_is_complete_valid_and_explicitly_classified() {
     let catalog = load_preset_catalog(&resources).unwrap();
     let definitions = catalog.iter().collect::<Vec<_>>();
 
-    assert_eq!(definitions.len(), 30);
+    assert_eq!(definitions.len(), 31);
     assert_eq!(
         definitions
             .iter()
@@ -39,6 +39,7 @@ fn shipped_catalog_is_complete_valid_and_explicitly_classified() {
         "test-artifacts",
         "coverage",
         "build-output",
+        "development-project",
         "environment-secrets",
         "certificates-keys",
         "database-dumps",

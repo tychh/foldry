@@ -4,7 +4,8 @@ use ignore::gitignore::GitignoreBuilder;
 
 use crate::{
     DiagnosticCode, DiagnosticSeverity, Extensions, ParserDiagnostic, PresetId, Profile,
-    ProfileFormatVersion, ProfileId, ProfileRule, RulePattern, SourceLocation, SourceSpan,
+    ProfileFormatVersion, ProfileId, ProfileRule, RulePattern, RuleSource, SourceLocation,
+    SourceSpan,
 };
 
 /// Result of parsing editable profile text. Invalid input keeps diagnostics but is
@@ -30,6 +31,7 @@ pub fn parse_profile(text: &str) -> ProfileParseResult {
     let mut profile_version = None;
     let mut profile_name = None;
     let mut rules = Vec::new();
+    let mut rule_sources = Vec::new();
     let mut current_preset: Option<(PresetId, u16, u32)> = None;
     let mut seen_presets = HashSet::new();
 
@@ -69,7 +71,10 @@ pub fn parse_profile(text: &str) -> ProfileParseResult {
                 ));
             } else {
                 match value.trim().parse::<u16>() {
-                    Ok(value) if value == ProfileFormatVersion::CURRENT.0 => {
+                    Ok(value)
+                        if value == ProfileFormatVersion::V1.0
+                            || value == ProfileFormatVersion::V2.0 =>
+                    {
                         profile_version = Some(ProfileFormatVersion(value));
                     }
                     Ok(value) => diagnostics.push(diagnostic(
@@ -109,6 +114,32 @@ pub fn parse_profile(text: &str) -> ProfileParseResult {
                 ));
             } else {
                 profile_name = Some(value.trim().to_owned());
+            }
+            continue;
+        }
+
+        if let Some(attributes) = line.strip_prefix("# @rule-source ") {
+            if attributes.trim() == "gitignore mode=exclude-unignored nested=true" {
+                if rule_sources.is_empty() {
+                    rule_sources.push(RuleSource::GitignoreExcludeUnignored {
+                        nested: true,
+                        span: line_span(line_number, line),
+                    });
+                } else {
+                    diagnostics.push(diagnostic(
+                        DiagnosticCode::DuplicateMetadata,
+                        "gitignore rule source is declared more than once",
+                        line_number,
+                        line,
+                    ));
+                }
+            } else {
+                diagnostics.push(diagnostic(
+                    DiagnosticCode::InvalidMetadata,
+                    "expected `# @rule-source gitignore mode=exclude-unignored nested=true`",
+                    line_number,
+                    line,
+                ));
             }
             continue;
         }
@@ -226,6 +257,20 @@ pub fn parse_profile(text: &str) -> ProfileParseResult {
     if profile_name.is_none() {
         diagnostics.push(missing_metadata("profile-name"));
     }
+    if !rule_sources.is_empty()
+        && profile_version.is_some_and(|version| version == ProfileFormatVersion::V1)
+    {
+        let span = match &rule_sources[0] {
+            RuleSource::GitignoreExcludeUnignored { span, .. } => Some(*span),
+        };
+        diagnostics.push(ParserDiagnostic {
+            code: DiagnosticCode::InvalidMetadata,
+            severity: DiagnosticSeverity::Error,
+            message: "dynamic rule sources require profile version 2".into(),
+            span,
+            extensions: Extensions::new(),
+        });
+    }
 
     let has_errors = diagnostics
         .iter()
@@ -238,6 +283,7 @@ pub fn parse_profile(text: &str) -> ProfileParseResult {
             id: profile_id.expect("validated profile id"),
             name: profile_name.expect("validated profile name"),
             rules,
+            rule_sources,
             extensions: Extensions::new(),
         })
     };
@@ -409,6 +455,22 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.code == DiagnosticCode::DuplicatePresetBlock)
         );
+    }
+
+    #[test]
+    fn dynamic_rule_source_requires_v2_and_has_precise_span() {
+        let directive = "# @rule-source gitignore mode=exclude-unignored nested=true";
+        let v1 = parse_profile(&format!(
+            "# @profile-id {ID}\n# @profile-version 1\n# @profile-name Old\n{directive}\n"
+        ));
+        assert!(!v1.is_valid());
+        assert_eq!(v1.diagnostics.last().unwrap().span.unwrap().start.line, 4);
+
+        let v2 = parse_profile(&format!(
+            "# @profile-id {ID}\n# @profile-version 2\n# @profile-name Dynamic\n{directive}\n"
+        ));
+        assert!(v2.is_valid());
+        assert_eq!(v2.profile.unwrap().rule_sources.len(), 1);
     }
 
     proptest! {

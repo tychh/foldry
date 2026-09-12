@@ -89,7 +89,8 @@ A Run stores `FolderId + ActionId` plus an immutable snapshot of:
 
 - source path;
 - complete action specification;
-- effective Ignore Profile text and hash;
+- immutable effective Ignore Profile snapshot, including resolved dynamic rule
+  sources and canonical hash;
 - execution settings.
 
 Current runs use current state. Historical repeat uses the saved snapshot even

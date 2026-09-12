@@ -7,6 +7,7 @@ import type {
 } from "../contracts/generated";
 import {
   applyRunEvent,
+  isCurrentAssessmentGeneration,
   reconcileBootstrapAfterRunEvents,
   reconcileSchedulerSnapshot,
 } from "./DesktopDataProvider";
@@ -134,6 +135,18 @@ describe("DesktopDataProvider run events", () => {
 
     expect(reconciled.active_runs[0]?.state).toBe("succeeded");
     expect(reconciled.recent_runs[0]?.state).toBe("succeeded");
+  });
+});
+
+describe("change assessment generations", () => {
+  it("accepts the current or a newer generation and rejects stale results", () => {
+    expect(isCurrentAssessmentGeneration(null, "1")).toBe(true);
+    expect(isCurrentAssessmentGeneration("42", "42")).toBe(true);
+    expect(isCurrentAssessmentGeneration("42", "43")).toBe(true);
+    expect(isCurrentAssessmentGeneration("43", "42")).toBe(false);
+    expect(
+      isCurrentAssessmentGeneration("9007199254740993", "9007199254740994"),
+    ).toBe(true);
   });
 });
 

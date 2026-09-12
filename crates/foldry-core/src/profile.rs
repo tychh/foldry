@@ -9,7 +9,8 @@ pub struct ProfileFormatVersion(pub u16);
 
 impl ProfileFormatVersion {
     pub const V1: Self = Self(1);
-    pub const CURRENT: Self = Self::V1;
+    pub const V2: Self = Self(2);
+    pub const CURRENT: Self = Self::V2;
 }
 
 impl Default for ProfileFormatVersion {
@@ -25,8 +26,32 @@ pub struct Profile {
     pub id: ProfileId,
     pub name: String,
     pub rules: Vec<ProfileRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rule_sources: Vec<RuleSource>,
     #[serde(default, skip_serializing_if = "Extensions::is_empty", flatten)]
     pub extensions: Extensions,
+}
+
+/// A dynamic rule source resolved relative to the Folder source.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RuleSource {
+    GitignoreExcludeUnignored { nested: bool, span: SourceSpan },
+}
+
+/// Immutable contents of one dynamic `.gitignore` used by a queued Run.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ResolvedGitignore {
+    pub relative_path: String,
+    pub contents: String,
+}
+
+/// Fully resolved matcher input and its stable checkpoint hash.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct EffectiveProfileSnapshot {
+    pub profile: Profile,
+    pub resolved_gitignores: Vec<ResolvedGitignore>,
+    pub hash: String,
 }
 
 /// Pattern semantics extracted from one profile line.

@@ -12,7 +12,7 @@ export type ActionId = string;
 
 export type RunId = string;
 
-export type ArchiveFormat = "zip" | "tar_gz" | "tar_zst";
+export type ArchiveFormat = "zip" | "tar_gz" | "tar_zst" | "7z";
 
 export type CompressionLevel = "fast" | "balanced" | "maximum";
 
@@ -36,7 +36,13 @@ export type ActionSpec = { action_type: string, version: number | null, archive:
 
 export type FolderAction = { id: ActionId, enabled: boolean, profile_id_override: ProfileId | null, spec: ActionSpec, extensions: { [key in string]: JsonValue }, };
 
-export type Folder = { id: FolderId, source: string, listed: boolean, enabled: boolean, default_profile_id: ProfileId, actions: Array<FolderAction>, extensions: { [key in string]: JsonValue }, };
+export type Folder = { id: FolderId, source: string, created_at: string, listed: boolean, enabled: boolean, default_profile_id: ProfileId, actions: Array<FolderAction>, extensions: { [key in string]: JsonValue }, };
+
+export type FolderAvailability = "available" | "missing" | "unavailable";
+
+export type FolderAvailabilityResult = { folder_id: FolderId, generation: string, availability: FolderAvailability, diagnostic: string | null, };
+
+export type ChangeState = "checking" | "unchanged" | "changed" | "no_checkpoint" | "missing" | "unknown";
 
 export type Plan = { version: number, name: string, folders: Array<Folder>, extensions: { [key in string]: JsonValue }, };
 
@@ -45,6 +51,8 @@ export type Locale = "en" | "ru";
 export type Appearance = "system" | "light" | "dark";
 
 export type BrowserView = "tree" | "list";
+
+export type FolderSortMode = "name_ascending" | "name_descending" | "recently_added" | "oldest_added" | "recently_run" | "least_recently_run";
 
 export type ArchiveDefaults = { output_directory: string, format: ArchiveFormat, compression: CompressionLevel, conflict_policy: ConflictPolicy, include_root: boolean, unreadable_policy: UnreadablePolicy, verification_mode: VerificationMode, checksum: ChecksumAlgorithm, extensions: { [key in string]: JsonValue }, };
 
@@ -56,7 +64,7 @@ export type HistorySettings = { runs: RetentionPolicy, logs: RetentionPolicy, ex
 
 export type BrowserSettings = { favorites: Array<string>, recent: Array<string>, view: BrowserView, extensions: { [key in string]: JsonValue }, };
 
-export type Settings = { version: number, locale: Locale, appearance: Appearance, default_profile_id: ProfileId | null, archive_defaults: ArchiveDefaults, execution: ExecutionSettings, history: HistorySettings, browser: BrowserSettings, extensions: { [key in string]: JsonValue }, };
+export type Settings = { version: number, locale: Locale, appearance: Appearance, default_profile_id: ProfileId | null, archive_defaults: ArchiveDefaults, execution: ExecutionSettings, history: HistorySettings, browser: BrowserSettings, folder_sort_mode: FolderSortMode, extensions: { [key in string]: JsonValue }, };
 
 export type DiagnosticSeverity = "error" | "warning";
 
@@ -112,7 +120,7 @@ export type PreviewPage = { entries: Array<PreviewEntry>, next_cursor: string | 
 
 export type FolderState = "ready" | "invalid" | "disabled";
 
-export type RunState = "queued" | "planning" | "running" | "paused" | "stopping" | "succeeded" | "succeeded_with_warnings" | "failed" | "stopped" | "interrupted";
+export type RunState = "queued" | "planning" | "running" | "paused" | "stopping" | "succeeded" | "succeeded_with_warnings" | "failed" | "stopped" | "interrupted" | "skipped";
 
 export type ProgressPhase = "planning" | "archiving" | "verifying" | "publishing";
 
@@ -134,7 +142,7 @@ completed_bytes: string,
  */
 total_bytes: string | null, current_path: string | null, };
 
-export type WarningCode = "zip_symlink_portability" | "junction_skipped" | "special_file_skipped" | "unreadable_entry_skipped" | "source_entry_changed";
+export type WarningCode = "zip_symlink_portability" | "junction_skipped" | "special_file_skipped" | "unreadable_entry_skipped" | "source_entry_changed" | "dynamic_rule_source_missing";
 
 export type ErrorCode = "invalid_configuration" | "invalid_profile" | "unsupported_action" | "source_unavailable" | "output_unavailable" | "output_conflict" | "read_failed" | "write_failed" | "verification_failed" | "cancelled" | "internal";
 
@@ -148,9 +156,31 @@ export type ArchiveArtifact = { path: string,
  */
 size_bytes: string, checksum_sha256: string | null, };
 
-export type RunOutcome = "succeeded" | "succeeded_with_warnings" | "failed" | "stopped" | "interrupted";
+export type RunOutcome = "succeeded" | "succeeded_with_warnings" | "failed" | "stopped" | "interrupted" | "skipped";
 
-export type ResultSummary = { outcome: RunOutcome, included_entries: string, skipped_entries: string, source_bytes: string, duration_ms: string, artifact: ArchiveArtifact | null, warnings: Array<FoldryWarning>, error: FoldryError | null, };
+export type SkipReason = "output_conflict";
+
+export type ResultSummary = { outcome: RunOutcome, included_entries: string, skipped_entries: string, source_bytes: string, duration_ms: string, artifact: ArchiveArtifact | null, warnings: Array<FoldryWarning>, error: FoldryError | null, skip_reason: SkipReason | null, };
+
+export type FolderOperationalSummary = { folder_id: FolderId, availability: FolderAvailability, availability_diagnostic: string | null, latest_outcome: RunOutcome | null, latest_run_at: string | null, last_successful_artifact: ArchiveArtifact | null, artifact_available: boolean, change_state: ChangeState, };
+
+export type RunChangedResult = { assessed: bigint, queued: bigint, unchanged: bigint, missing: bigint, invalid: bigint, already_running: bigint, output_conflict_skipped: bigint, };
+
+export type ChangeAssessmentProgress = {
+/**
+ * Decimal string to avoid JavaScript integer precision loss.
+ */
+generation: string, completed: bigint, total: bigint, current_folder: string | null, cancelled: boolean, finished: boolean, };
+
+export type ChangeAssessmentResult = {
+/**
+ * Decimal string to avoid JavaScript integer precision loss.
+ */
+generation: string, cancelled: boolean, summaries: Array<FolderOperationalSummary>, };
+
+export type ScheduledRun = { record: RunRecord, queue_position: bigint | null, };
+
+export type SchedulerSnapshot = { runs: Array<ScheduledRun>, globally_paused: boolean, active: bigint, waiting: bigint, };
 
 export type RunEventKind = { "type": "state_changed", state: RunState, } | { "type": "progress", progress: ProgressSnapshot, } | { "type": "warning", warning: FoldryWarning, } | { "type": "error", error: FoldryError, } | { "type": "completed", summary: ResultSummary, };
 
@@ -184,7 +214,7 @@ sequence: string, occurred_at: string, level: LogLevel, message: string, path: s
 
 export type StoragePaths = { config: string, data: string, cache: string, };
 
-export type BootstrapSnapshot = { version: number, settings: Settings, plan: Plan, profiles: Array<StoredProfile>, presets: Array<StoredPreset>, active_runs: Array<RunRecord>, recent_runs: Array<RunRecord>, previews: Array<PreviewSnapshot>, roots: Array<BrowserRoot>, storage: StoragePaths, };
+export type BootstrapSnapshot = { version: number, settings: Settings, plan: Plan, profiles: Array<StoredProfile>, presets: Array<StoredPreset>, active_runs: Array<RunRecord>, recent_runs: Array<RunRecord>, folder_summaries: Array<FolderOperationalSummary>, previews: Array<PreviewSnapshot>, roots: Array<BrowserRoot>, storage: StoragePaths, };
 
 export type BrowserChildren = {
 /**

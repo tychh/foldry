@@ -3,11 +3,12 @@ use std::fmt;
 use foldry_application::{
     ContractValidation, Plan, PlanVersion, Settings, SettingsVersion, ValidationIssue,
 };
+use jiff::Timestamp;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::{DocumentKind, MigrationRegistry};
+use crate::{DocumentKind, MigrationRegistry, MigrationStep};
 
 /// Safe failure modes for reading or writing a public YAML contract.
 #[derive(Debug, Error)]
@@ -55,13 +56,21 @@ impl DocumentError {
     }
 }
 
-/// Decodes and validates plan schema v1.
+/// Decodes and validates the current plan schema.
 pub fn decode_plan(source: &str) -> Result<Plan, DocumentError> {
     decode(
         source,
         DocumentKind::Plan,
         PlanVersion::CURRENT.0,
-        &MigrationRegistry::new(DocumentKind::Plan, PlanVersion::CURRENT.0, Vec::new()),
+        &MigrationRegistry::new(
+            DocumentKind::Plan,
+            PlanVersion::CURRENT.0,
+            vec![MigrationStep {
+                from: 2,
+                to: 3,
+                migrate: migrate_plan_v2_to_v3,
+            }],
+        ),
     )
 }
 
@@ -70,7 +79,7 @@ pub fn encode_plan(plan: &Plan) -> Result<String, DocumentError> {
     encode(plan, DocumentKind::Plan)
 }
 
-/// Decodes and validates settings schema v1.
+/// Decodes and validates the current settings schema.
 pub fn decode_settings(source: &str) -> Result<Settings, DocumentError> {
     decode(
         source,
@@ -79,9 +88,44 @@ pub fn decode_settings(source: &str) -> Result<Settings, DocumentError> {
         &MigrationRegistry::new(
             DocumentKind::Settings,
             SettingsVersion::CURRENT.0,
-            Vec::new(),
+            vec![MigrationStep {
+                from: 1,
+                to: 2,
+                migrate: migrate_settings_v1_to_v2,
+            }],
         ),
     )
+}
+
+fn migrate_plan_v2_to_v3(mut value: Value) -> Result<Value, String> {
+    let folders = value
+        .get_mut("folders")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "plan folders must be an array".to_owned())?;
+    for (index, folder) in folders.iter_mut().enumerate() {
+        let folder = folder
+            .as_object_mut()
+            .ok_or_else(|| format!("plan folder at index {index} must be an object"))?;
+        let seconds = i64::try_from(index).map_err(|_| "too many folders to migrate")?;
+        let timestamp = Timestamp::UNIX_EPOCH
+            .checked_add(jiff::SignedDuration::from_secs(seconds))
+            .map_err(|error| error.to_string())?;
+        folder.insert("created_at".into(), Value::String(timestamp.to_string()));
+    }
+    value["version"] = Value::from(3);
+    Ok(value)
+}
+
+fn migrate_settings_v1_to_v2(mut value: Value) -> Result<Value, String> {
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "settings document must be an object".to_owned())?;
+    object.insert(
+        "folder_sort_mode".into(),
+        Value::String("oldest_added".into()),
+    );
+    object.insert("version".into(), Value::from(2));
+    Ok(value)
 }
 
 /// Produces canonical UTF-8 YAML with LF and a final newline.

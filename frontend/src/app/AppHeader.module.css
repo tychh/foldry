@@ -149,6 +149,13 @@
   }
 }
 
+@media (max-width: 32em) {
+  .connection,
+  .infoButton {
+    display: none;
+  }
+}
+
 @media (max-width: 24em) {
   .navButton {
     font-size: 0.8rem;

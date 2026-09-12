@@ -5,7 +5,8 @@ use std::{
 };
 
 use foldry_application::{
-    RESERVATION_METADATA_VERSION, RepositoryError, ReservationMetadata, RunHistoryRepository,
+    LEGACY_RESERVATION_METADATA_VERSION, RESERVATION_METADATA_VERSION, RepositoryError,
+    ReservationMetadata, ReservationOwnerKind, RunHistoryRepository, RunId,
 };
 use jiff::Timestamp;
 use sysinfo::{Pid, System};
@@ -14,19 +15,38 @@ const RESERVATION_SUFFIX: &str = ".foldry-reserve";
 const MANIFEST_SUFFIX: &str = ".foldry-manifest";
 
 pub trait ProcessProbe {
-    fn is_running(&self, process_id: u32) -> bool;
+    fn matches(&self, process_id: u32, started_unix_seconds: Option<u64>) -> bool;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemProcessProbe;
 
 impl ProcessProbe for SystemProcessProbe {
-    fn is_running(&self, process_id: u32) -> bool {
-        process_id != 0
-            && System::new_all()
-                .process(Pid::from_u32(process_id))
-                .is_some()
+    fn matches(&self, process_id: u32, started_unix_seconds: Option<u64>) -> bool {
+        if process_id == 0 {
+            return false;
+        }
+        System::new_all()
+            .process(Pid::from_u32(process_id))
+            .is_some_and(|process| {
+                started_unix_seconds.is_none_or(|started| process.start_time() == started)
+            })
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryContext {
+    pub owner_kind: ReservationOwnerKind,
+    pub instance_id: String,
+    pub directory_scope_id: String,
+    pub exclusive_scope_guard: bool,
+}
+
+#[must_use]
+pub fn current_process_started_unix_seconds() -> u64 {
+    System::new_all()
+        .process(Pid::from_u32(std::process::id()))
+        .map_or(0, sysinfo::Process::start_time)
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -52,16 +72,18 @@ pub fn reconcile_startup(
     manifest_directory: &Path,
     minimum_age_seconds: u64,
     processes: &dyn ProcessProbe,
+    context: &RecoveryContext,
 ) -> Result<StartupReconciliationReport, RepositoryError> {
-    let interrupted_runs = history.mark_unfinished_interrupted(at)?;
     let mut artifacts = clean_stale_output_artifacts(
         output_directories,
         at.as_second(),
         minimum_age_seconds,
         processes,
+        context,
     )?;
     artifacts.removed_manifests =
         clean_stale_manifests(manifest_directory, at.as_second(), minimum_age_seconds)?;
+    let interrupted_runs = history.mark_unfinished_interrupted(at)?;
     Ok(StartupReconciliationReport {
         interrupted_runs,
         artifacts,
@@ -73,6 +95,7 @@ pub fn clean_stale_output_artifacts(
     now_unix_seconds: i64,
     minimum_age_seconds: u64,
     processes: &dyn ProcessProbe,
+    context: &RecoveryContext,
 ) -> Result<ArtifactCleanupReport, RepositoryError> {
     let mut report = ArtifactCleanupReport::default();
     let directories = output_directories
@@ -96,22 +119,27 @@ pub fn clean_stale_output_artifacts(
                 report.retained_unverified += 1;
                 continue;
             };
+            let legacy = metadata.version == LEGACY_RESERVATION_METADATA_VERSION;
+            if !legacy && !metadata_matches_scope(&metadata, context) {
+                report.retained_unverified += 1;
+                continue;
+            }
             if !is_old_enough(
                 metadata.created_unix_seconds,
                 now_unix_seconds,
-                minimum_age_seconds,
+                if legacy { minimum_age_seconds } else { 0 },
             ) {
                 report.retained_recent += 1;
                 continue;
             }
-            if processes.is_running(metadata.process_id) {
+            if owner_is_active(&metadata, processes, context) {
                 report.retained_active += 1;
                 continue;
             }
             match fs::symlink_metadata(&expected_temp) {
                 Ok(temp_metadata)
                     if temp_metadata.file_type().is_file()
-                        || temp_metadata.file_type().is_symlink() =>
+                        && !temp_metadata.file_type().is_symlink() =>
                 {
                     fs::remove_file(&expected_temp).map_err(repository_error)?;
                     report.removed_temp_files += 1;
@@ -145,13 +173,13 @@ pub fn clean_stale_manifests(
         let entry = entry.map_err(repository_error)?;
         let path = entry.path();
         let file_type = entry.file_type().map_err(repository_error)?;
-        if !file_type.is_file()
-            || file_type.is_symlink()
-            || !path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(MANIFEST_SUFFIX))
-        {
+        let valid_run_id = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(MANIFEST_SUFFIX))
+            .and_then(|id| id.parse::<RunId>().ok())
+            .is_some();
+        if !file_type.is_file() || file_type.is_symlink() || !valid_run_id {
             continue;
         }
         let modified = entry
@@ -187,7 +215,11 @@ fn verified_metadata(
     let Ok(metadata) = serde_json::from_slice::<ReservationMetadata>(&contents) else {
         return Ok(None);
     };
-    if metadata.version != RESERVATION_METADATA_VERSION || metadata.process_id == 0 {
+    if !matches!(
+        metadata.version,
+        LEGACY_RESERVATION_METADATA_VERSION | RESERVATION_METADATA_VERSION
+    ) || metadata.process_id == 0
+    {
         return Ok(None);
     }
     let expected_name = format!(".{final_name}.{}.part", metadata.run_id);
@@ -196,10 +228,44 @@ fn verified_metadata(
     {
         return Ok(None);
     }
+    if metadata.version == RESERVATION_METADATA_VERSION
+        && (metadata.final_file_name.as_deref() != Some(final_name)
+            || metadata.owner_kind.is_none()
+            || metadata.instance_id.as_deref().is_none_or(str::is_empty)
+            || metadata
+                .directory_scope_id
+                .as_deref()
+                .is_none_or(str::is_empty)
+            || metadata.process_started_unix_seconds.is_none())
+    {
+        return Ok(None);
+    }
     Ok(Some((
         metadata.clone(),
         reservation_path.with_file_name(metadata.temp_file_name),
     )))
+}
+
+fn metadata_matches_scope(metadata: &ReservationMetadata, context: &RecoveryContext) -> bool {
+    metadata.owner_kind == Some(context.owner_kind)
+        && metadata.directory_scope_id.as_deref() == Some(context.directory_scope_id.as_str())
+}
+
+fn owner_is_active(
+    metadata: &ReservationMetadata,
+    processes: &dyn ProcessProbe,
+    context: &RecoveryContext,
+) -> bool {
+    if metadata.version == LEGACY_RESERVATION_METADATA_VERSION {
+        return processes.matches(metadata.process_id, None);
+    }
+    if metadata.instance_id.as_deref() == Some(context.instance_id.as_str()) {
+        return true;
+    }
+    if context.owner_kind == ReservationOwnerKind::Desktop && context.exclusive_scope_guard {
+        return false;
+    }
+    processes.matches(metadata.process_id, metadata.process_started_unix_seconds)
 }
 
 fn is_reservation_name(path: &Path) -> bool {

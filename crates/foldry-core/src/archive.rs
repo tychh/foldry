@@ -26,7 +26,59 @@ pub enum ArchiveFormat {
     Zip,
     TarGz,
     TarZst,
+    #[serde(rename = "7z")]
+    SevenZip,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ArchiveFormatCapabilities {
+    pub format: ArchiveFormat,
+    pub modification_time: bool,
+    pub creation_time: bool,
+    pub unix_mode: bool,
+    pub windows_attributes: bool,
+    pub symlink: bool,
+    pub timestamp_precision_nanos: u32,
+}
+
+pub const ARCHIVE_FORMAT_CAPABILITIES: [ArchiveFormatCapabilities; 4] = [
+    ArchiveFormatCapabilities {
+        format: ArchiveFormat::Zip,
+        modification_time: true,
+        creation_time: true,
+        unix_mode: true,
+        windows_attributes: false,
+        symlink: true,
+        timestamp_precision_nanos: 1_000_000_000,
+    },
+    ArchiveFormatCapabilities {
+        format: ArchiveFormat::TarGz,
+        modification_time: true,
+        creation_time: false,
+        unix_mode: true,
+        windows_attributes: false,
+        symlink: true,
+        timestamp_precision_nanos: 1_000_000_000,
+    },
+    ArchiveFormatCapabilities {
+        format: ArchiveFormat::TarZst,
+        modification_time: true,
+        creation_time: false,
+        unix_mode: true,
+        windows_attributes: false,
+        symlink: true,
+        timestamp_precision_nanos: 1_000_000_000,
+    },
+    ArchiveFormatCapabilities {
+        format: ArchiveFormat::SevenZip,
+        modification_time: true,
+        creation_time: true,
+        unix_mode: true,
+        windows_attributes: true,
+        symlink: true,
+        timestamp_precision_nanos: 100,
+    },
+];
 
 /// Stable semantic compression choice stored in plans and settings.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

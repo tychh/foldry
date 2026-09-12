@@ -89,6 +89,9 @@ notarization. An ad-hoc build is suitable for local development.
 2. Select **Add folders**.
 3. Pick a folder in Locations, Favorites, Recent, Tree, or List.
 4. Keep **Default** as the Ignore Profile for a minimal first run.
+   For software projects, **Development Project** can instead keep only
+   Git-ignored candidates and remove safe cross-language runtime, build, test,
+   IDE, VCS, OS, cache, and coverage artifacts.
 5. Configure the Archive action and open **Preview**.
 6. Review excluded entries and run the action.
 

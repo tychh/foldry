@@ -13,12 +13,14 @@ import type { ParserDiagnostic } from "../../shared/contracts/generated";
 
 type ProfileCodeEditorProps = {
   diagnostics: ParserDiagnostic[];
+  label: string;
   value: string;
   onChange: (value: string) => void;
 };
 
 export function ProfileCodeEditor({
   diagnostics,
+  label,
   value,
   onChange,
 }: ProfileCodeEditorProps) {
@@ -49,6 +51,7 @@ export function ProfileCodeEditor({
         diagnosticsExtension,
         lintGutter(),
         EditorView.lineWrapping,
+        EditorView.contentAttributes.of({ "aria-label": label }),
       ]}
       height="100%"
       theme="none"

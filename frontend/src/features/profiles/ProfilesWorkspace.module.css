@@ -62,6 +62,10 @@
   background: var(--mantine-primary-color-light);
 }
 
+:global([data-mantine-color-scheme="dark"]) .profileRow[data-active] {
+  color: var(--mantine-color-blue-2);
+}
+
 .validity {
   width: 0.5rem;
   height: 0.5rem;
@@ -291,17 +295,21 @@
 
 @media (max-width: 74.99em) {
   .workspace {
-    grid-template-columns: 210px minmax(0, 1fr);
+    grid-template-columns: 180px minmax(320px, 1fr) minmax(240px, 280px);
   }
 
+  .profileRail,
+  .editorPanel,
   .presetRail {
-    display: none;
+    padding: 1rem;
   }
 }
 
 @media (max-width: 47.99em) {
   .workspace {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(32rem, 1fr) auto;
+    overflow-y: auto;
   }
 
   .profileRail {
@@ -309,7 +317,15 @@
   }
 
   .editorPanel {
+    min-height: 32rem;
     padding: 1rem;
+  }
+
+  .presetRail {
+    min-height: 22rem;
+    padding: 1rem;
+    border-top: 1px solid var(--mantine-color-default-border);
+    border-left: 0;
   }
 
   .editorHeader {

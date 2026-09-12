@@ -1,15 +1,16 @@
 use std::{fs, path::PathBuf};
 
 use foldry_application::{
-    ActionSpec, BrowserView, ContractValidation, ExecutionBlockerCode, ValidationCode,
+    ActionSpec, BrowserView, ContractValidation, ExecutionBlockerCode, FolderSortMode,
+    ValidationCode,
 };
 use foldry_storage::{DocumentError, decode_plan, decode_settings, encode_plan, encode_settings};
 use proptest::prelude::*;
 use serde_json::Value;
 
 #[test]
-fn v2_plan_has_a_stable_golden_round_trip() {
-    let source = fixture("formats/v2/plan.packplan.yaml");
+fn v3_plan_has_a_stable_golden_round_trip() {
+    let source = fixture("formats/v3/plan.packplan.yaml");
     let plan = decode_plan(&source).unwrap();
     let encoded = encode_plan(&plan).unwrap();
 
@@ -18,13 +19,31 @@ fn v2_plan_has_a_stable_golden_round_trip() {
 }
 
 #[test]
-fn v1_settings_have_a_stable_golden_round_trip() {
-    let source = fixture("formats/v1/settings.yaml");
+fn v2_settings_have_a_stable_golden_round_trip() {
+    let source = fixture("formats/v2/settings.yaml");
     let settings = decode_settings(&source).unwrap();
     let encoded = encode_settings(&settings).unwrap();
 
     assert_eq!(encoded, source);
     assert!(settings.validate().is_empty());
+}
+
+#[test]
+fn v2_plan_migrates_with_deterministic_folder_timestamps() {
+    let source = fixture("formats/v2/plan.packplan.yaml");
+    let plan = decode_plan(&source).unwrap();
+    assert_eq!(plan.version.0, 3);
+    assert_eq!(
+        plan.folders[0].created_at.to_string(),
+        "1970-01-01T00:00:00Z"
+    );
+}
+
+#[test]
+fn v1_settings_migrate_to_oldest_added_sort() {
+    let settings = decode_settings(&fixture("formats/v1/settings.yaml")).unwrap();
+    assert_eq!(settings.version.0, 2);
+    assert_eq!(settings.folder_sort_mode, FolderSortMode::OldestAdded);
 }
 
 #[test]
@@ -123,14 +142,14 @@ fn unknown_action_is_preserved_but_blocked_from_execution() {
 
 #[test]
 fn future_document_version_fails_without_panicking() {
-    let source = fixture("formats/future/plan-v3.packplan.yaml");
+    let source = fixture("formats/future/plan-v4.packplan.yaml");
     let error = decode_plan(&source).unwrap_err();
 
     assert!(matches!(
         error,
         DocumentError::UnsupportedVersion {
-            found: 3,
-            current: 2,
+            found: 4,
+            current: 3,
             ..
         }
     ));

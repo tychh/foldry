@@ -79,6 +79,12 @@ pub struct ScannedEntry {
     pub disposition: ScanDisposition,
     pub size: u64,
     pub modified_unix_nanos: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_unix_nanos: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unix_mode: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows_attributes: Option<u32>,
     pub link_target: Option<PathBuf>,
     pub is_mount_point: bool,
     pub is_network_mount: bool,
@@ -106,6 +112,10 @@ pub struct CancellationToken {
 }
 
 impl CancellationToken {
+    pub(crate) fn from_flag(cancelled: Arc<AtomicBool>) -> Self {
+        Self { cancelled }
+    }
+
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
     }
@@ -302,6 +312,9 @@ impl FileSystemScanner {
                         disposition: ScanDisposition::Skipped,
                         size: 0,
                         modified_unix_nanos: None,
+                        created_unix_nanos: None,
+                        unix_mode: None,
+                        windows_attributes: None,
                         link_target: None,
                         is_mount_point: false,
                         is_network_mount: false,
@@ -345,6 +358,9 @@ impl FileSystemScanner {
                     0
                 },
                 modified_unix_nanos: modified_unix_nanos(&metadata),
+                created_unix_nanos: created_unix_nanos(&metadata),
+                unix_mode: unix_mode(&metadata),
+                windows_attributes: windows_attributes(&metadata),
                 link_target: if matches!(
                     kind,
                     FileSystemObjectKind::Symlink | FileSystemObjectKind::JunctionOrReparsePoint
@@ -365,7 +381,9 @@ impl FileSystemScanner {
                     relative_match_path.clone(),
                     "special files are not archived".to_owned(),
                 ));
-            } else if is_directory && disposition == ScanDisposition::Included {
+            } else if is_directory
+                && (disposition == ScanDisposition::Included || matcher.requires_full_traversal())
+            {
                 let identity = file_identity(&metadata);
                 if identity.is_some_and(|identity| ancestors.contains(&identity)) {
                     entry.disposition = ScanDisposition::Skipped;
@@ -543,6 +561,37 @@ fn modified_unix_nanos(metadata: &fs::Metadata) -> Option<u64> {
         .duration_since(UNIX_EPOCH)
         .ok()
         .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
+}
+
+fn created_unix_nanos(metadata: &fs::Metadata) -> Option<u64> {
+    metadata
+        .created()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
+}
+
+#[cfg(unix)]
+fn unix_mode(metadata: &fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(metadata.permissions().mode())
+}
+
+#[cfg(not(unix))]
+const fn unix_mode(_metadata: &fs::Metadata) -> Option<u32> {
+    None
+}
+
+#[cfg(windows)]
+fn windows_attributes(metadata: &fs::Metadata) -> Option<u32> {
+    use std::os::windows::fs::MetadataExt;
+    Some(metadata.file_attributes())
+}
+
+#[cfg(not(windows))]
+const fn windows_attributes(_metadata: &fs::Metadata) -> Option<u32> {
+    None
 }
 
 fn relative_path_to_match_path(path: &Path) -> Result<String, MatchPathError> {

@@ -1,5 +1,9 @@
 # Troubleshooting
 
+If a remembered source is disconnected or moved, Foldry keeps its configuration
+and marks it unavailable. Use **Locate folder** from the card menu; do not remove
+and re-add it if you want to preserve its identity and change checkpoint.
+
 Start with the visible error, the affected Folder or Action, and its latest entry
 in Run history. Export sanitized logs from the run details when available.
 

@@ -1,8 +1,10 @@
 use std::{fs, path::PathBuf};
 
 use foldry_application::{
-    ErrorCode, Extensions, FoldryError, LogLevel, LogRecord, LogRepository, PageRequest,
-    ResultSummary, RunHistoryRepository, RunOutcome, RunRecord, RunSnapshot, RunState, Settings,
+    ActionCheckpoint, ArchiveArtifact, ErrorCode, Extensions, FoldryError, LogLevel, LogRecord,
+    LogRepository, OutputDirectoryRegistry, PageRequest, ResultSummary, RunHistoryRepository,
+    RunOutcome, RunRecord, RunSnapshot, RunState, Settings, SourceFingerprintSummary,
+    TerminalRunCommit,
 };
 use foldry_storage::{SqliteRepository, decode_plan};
 use jiff::Timestamp;
@@ -184,6 +186,205 @@ fn migration_is_transactional_and_future_schemas_are_rejected() {
     assert!(error.message.contains("newer than supported"));
 }
 
+#[test]
+fn v1_migration_preserves_runs_and_logs_and_adds_output_registry() {
+    let root = tempfile::tempdir().unwrap();
+    let database = root.path().join("app.db");
+    let output = root.path().join("output");
+    fs::create_dir(&output).unwrap();
+    let run = sample_run("2026-01-01T00:00:00Z", RunState::Succeeded);
+    {
+        let repository = SqliteRepository::open(&database).unwrap();
+        repository.insert(&run).unwrap();
+        repository.append(&sample_log(&run, 1)).unwrap();
+    }
+    Connection::open(&database)
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE output_directories;
+             DROP TABLE action_checkpoints;
+             DROP TABLE action_operational_state;
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+
+    let repository = SqliteRepository::open(&database).unwrap();
+    assert_eq!(repository.get(run.run_id).unwrap(), Some(run.clone()));
+    assert_eq!(
+        LogRepository::page(
+            &repository,
+            run.run_id,
+            PageRequest {
+                offset: 0,
+                limit: 10,
+            },
+        )
+        .unwrap(),
+        vec![sample_log(&run, 1)]
+    );
+    repository.register(&output).unwrap();
+    repository.register(&output).unwrap();
+    assert_eq!(
+        repository.known_directories().unwrap(),
+        vec![output.canonicalize().unwrap()]
+    );
+}
+
+#[test]
+fn output_registry_prunes_directories_not_in_the_active_plan() {
+    let root = tempfile::tempdir().unwrap();
+    let keep = root.path().join("keep");
+    let stale = root.path().join("stale");
+    fs::create_dir(&keep).unwrap();
+    fs::create_dir(&stale).unwrap();
+    let repository = SqliteRepository::open_in_memory().unwrap();
+    repository.register(&keep).unwrap();
+    repository.register(&stale).unwrap();
+
+    assert_eq!(
+        repository
+            .prune_except(std::slice::from_ref(&keep))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        repository.known_directories().unwrap(),
+        vec![fs::canonicalize(keep).unwrap()]
+    );
+}
+
+#[test]
+fn terminal_commit_and_operational_records_survive_history_retention() {
+    let root = tempfile::tempdir().unwrap();
+    let artifact_path = root.path().join("archive.zip");
+    fs::write(&artifact_path, "archive").unwrap();
+    let repository = SqliteRepository::open_in_memory().unwrap();
+    let mut run = sample_run("2026-01-01T00:00:00Z", RunState::Running);
+    repository.insert(&run).unwrap();
+    run.state = RunState::Succeeded;
+    run.finished_at = Some(timestamp("2026-01-01T00:01:00Z"));
+    run.summary = Some(ResultSummary {
+        outcome: RunOutcome::Succeeded,
+        included_entries: 2,
+        skipped_entries: 0,
+        source_bytes: 7,
+        duration_ms: 100,
+        artifact: Some(ArchiveArtifact {
+            path: artifact_path.clone(),
+            size_bytes: 7,
+            checksum_sha256: None,
+        }),
+        warnings: Vec::new(),
+        error: None,
+        skip_reason: None,
+    });
+    let checkpoint = ActionCheckpoint {
+        folder_id: run.folder_id,
+        action_id: run.action_id,
+        algorithm_version: 1,
+        source_fingerprint: "sha256:source".into(),
+        effective_profile_hash: "sha256:profile".into(),
+        source_summary: SourceFingerprintSummary {
+            included_entries: 2,
+            included_bytes: 7,
+        },
+        run_id: run.run_id,
+        completed_at: run.finished_at.unwrap(),
+    };
+    repository
+        .commit_terminal_run(&TerminalRunCommit {
+            run: run.clone(),
+            checkpoint: Some(checkpoint.clone()),
+        })
+        .unwrap();
+
+    RunHistoryRepository::apply_retention(
+        &repository,
+        timestamp("2027-01-01T00:00:00Z"),
+        1,
+        1,
+        false,
+    )
+    .unwrap();
+    assert!(repository.get(run.run_id).unwrap().is_none());
+    assert_eq!(
+        repository.checkpoints(&[run.folder_id]).unwrap(),
+        vec![checkpoint]
+    );
+    let states = repository.operational_states(&[run.folder_id]).unwrap();
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].latest_outcome, RunOutcome::Succeeded);
+    assert_eq!(
+        states[0]
+            .last_successful_artifact
+            .as_ref()
+            .map(|artifact| &artifact.path),
+        Some(&artifact_path)
+    );
+}
+
+#[test]
+fn terminal_commit_rolls_back_all_parts_on_checkpoint_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let database = root.path().join("atomic.db");
+    let repository = SqliteRepository::open(&database).unwrap();
+    let mut run = sample_run("2026-01-01T00:00:00Z", RunState::Running);
+    repository.insert(&run).unwrap();
+    Connection::open(&database)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER reject_checkpoint BEFORE INSERT ON action_checkpoints
+             BEGIN SELECT RAISE(ABORT, 'fault injection'); END;",
+        )
+        .unwrap();
+    run.state = RunState::Succeeded;
+    run.finished_at = Some(timestamp("2026-01-01T00:01:00Z"));
+    run.summary = Some(ResultSummary {
+        outcome: RunOutcome::Succeeded,
+        included_entries: 1,
+        skipped_entries: 0,
+        source_bytes: 1,
+        duration_ms: 1,
+        artifact: None,
+        warnings: Vec::new(),
+        error: None,
+        skip_reason: None,
+    });
+    let checkpoint = ActionCheckpoint {
+        folder_id: run.folder_id,
+        action_id: run.action_id,
+        algorithm_version: 1,
+        source_fingerprint: "fingerprint".into(),
+        effective_profile_hash: "profile".into(),
+        source_summary: SourceFingerprintSummary {
+            included_entries: 1,
+            included_bytes: 1,
+        },
+        run_id: run.run_id,
+        completed_at: run.finished_at.unwrap(),
+    };
+
+    assert!(
+        repository
+            .commit_terminal_run(&TerminalRunCommit {
+                run: run.clone(),
+                checkpoint: Some(checkpoint),
+            })
+            .is_err()
+    );
+    assert_eq!(
+        repository.get(run.run_id).unwrap().unwrap().state,
+        RunState::Running
+    );
+    assert!(repository.checkpoints(&[run.folder_id]).unwrap().is_empty());
+    assert!(
+        repository
+            .operational_states(&[run.folder_id])
+            .unwrap()
+            .is_empty()
+    );
+}
+
 fn sample_run(started_at: &str, state: RunState) -> RunRecord {
     let plan = fixture_plan();
     let mut folder = plan.folders[0].clone();
@@ -205,6 +406,7 @@ fn sample_run(started_at: &str, state: RunState) -> RunRecord {
             settings: Settings::default(),
             profile_text: "# profile snapshot".into(),
             profile_hash: "sha256:test".into(),
+            effective_profile: None,
         },
         summary: None,
     }
@@ -237,6 +439,7 @@ fn failed_summary() -> ResultSummary {
             path: Some("source/file.txt".into()),
             extensions: Extensions::new(),
         }),
+        skip_reason: None,
     }
 }
 

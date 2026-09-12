@@ -21,12 +21,14 @@ tauri-build.workspace = true
 [dependencies]
 foldry-application = { path = "../foldry-application" }
 foldry-storage = { path = "../foldry-storage" }
+jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tauri.workspace = true
 tauri-plugin-dialog.workspace = true
 tauri-plugin-opener.workspace = true
+tauri-plugin-single-instance.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

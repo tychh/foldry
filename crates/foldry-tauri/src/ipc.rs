@@ -3,35 +3,42 @@ use std::{
     fs,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Condvar, Mutex, MutexGuard},
 };
 
 use foldry_application::{
-    ActionId, ActionSpec, ApplicationPorts, ApplicationServices, CancellationToken, Clock,
-    CompiledProfile, FileSystemBrowser, Folder, FolderId, LatestRequestRegistry, LogRepository,
-    PageRequest, Plan, PresetId, PreviewCacheKey, PreviewFilter, PreviewSnapshot, ProfileId,
-    RunEvent, RunEventSink, RunHistoryRepository, RunRecord, RunState, Scheduler, SchedulerPorts,
-    Settings, SystemClock, UseCaseError, UuidIdGenerator, detect_case_sensitivity, parse_profile,
+    ActionId, ActionSpec, ApplicationPorts, ApplicationServices, ArchiveFormat, CancellationToken,
+    ChangeState, Clock, CompiledProfile, ConflictPolicy, FileSystemBrowser, Folder,
+    FolderAvailability, FolderId, FolderOperationalSummary, LatestRequestRegistry, LogRepository,
+    OutputDirectoryRegistry, PageRequest, Plan, PresetId, PreviewCacheKey, PreviewFilter,
+    PreviewSnapshot, ProfileId, ReservationOwner, ReservationOwnerKind, RunEvent, RunEventSink,
+    RunHistoryRepository, RunId, RunRecord, RunState, Scheduler, SchedulerPorts, Settings,
+    StoredProfile, SystemClock, UseCaseError, UuidIdGenerator, detect_case_sensitivity,
     transport::{
         BootstrapSnapshotDto, BrowserChildrenDto, BrowserNodeDto, BrowserRootDto, BrowserSizeDto,
-        BrowserViewDto, FolderActionDto, FolderAddResultDto, FolderDto, IpcErrorDto, LogRecordDto,
-        PlanDto, PreviewEntryDto, PreviewFilterDto, PreviewPageDto, PreviewStartedDto,
-        ProfileIdDto, RunEventDto, RunRecordDto, SettingsDto, StoragePathsDto, StoredPresetDto,
-        StoredProfileDto,
+        BrowserViewDto, ChangeAssessmentProgressDto, ChangeAssessmentResultDto, FolderActionDto,
+        FolderAddResultDto, FolderAvailabilityDto, FolderAvailabilityResultDto, FolderDto,
+        IpcErrorDto, LogRecordDto, PlanDto, PreviewEntryDto, PreviewFilterDto, PreviewPageDto,
+        PreviewStartedDto, ProfileIdDto, RunChangedResultDto, RunEventDto, RunRecordDto,
+        SchedulerSnapshotDto, SettingsDto, StoragePathsDto, StoredPresetDto, StoredProfileDto,
     },
 };
 use foldry_storage::{
     AppDirectories, ArchiveRunExecutor, DirectoryOverrides, FileActivePlanRepository,
     FilePresetRepository, FileProfileRepository, FileSettingsRepository, ManifestCursor,
-    ManifestHandle, SqliteRepository, SystemProcessProbe, initialize_resource_copies,
-    reconcile_startup, scan_to_manifest,
+    ManifestHandle, RecoveryContext, SqliteRepository, SystemProcessProbe,
+    current_process_started_unix_seconds, fingerprint_manifest_cancellable,
+    initialize_resource_copies, reconcile_startup, scan_to_manifest,
 };
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 pub const RUN_EVENT_NAME: &str = "foldry://run-event";
+pub const CHANGE_ASSESSMENT_EVENT_NAME: &str = "foldry://change-assessment-event";
+const CHANGE_ASSESSMENT_KEY: &str = "all-folders";
 #[cfg(test)]
 const COMMAND_NAMES: &[&str] = &[
     "bootstrap_snapshot",
@@ -46,6 +53,9 @@ const COMMAND_NAMES: &[&str] = &[
     "add_folder",
     "add_dropped_sources",
     "update_folder",
+    "locate_folder",
+    "probe_folder_availability",
+    "open_source_folder",
     "unlist_folder",
     "unlisted_folders",
     "forget_folders",
@@ -73,6 +83,9 @@ const COMMAND_NAMES: &[&str] = &[
     "run_action",
     "run_folder",
     "run_all_enabled",
+    "run_changed",
+    "recheck_changed",
+    "cancel_recheck_changed",
     "repeat_run",
     "scheduler_snapshot",
     "pause_run",
@@ -87,6 +100,7 @@ const COMMAND_NAMES: &[&str] = &[
     "export_run_logs",
     "pick_folders",
     "reveal_run_output",
+    "reveal_last_folder_output",
 ];
 
 #[derive(Clone)]
@@ -98,6 +112,60 @@ pub struct DesktopState {
     preview_requests: Arc<Mutex<LatestRequestRegistry<(FolderId, ActionId)>>>,
     browser_requests: Arc<Mutex<LatestRequestRegistry<String>>>,
     browser_size_requests: Arc<Mutex<LatestRequestRegistry<String>>>,
+    change_assessment_requests: Arc<Mutex<LatestRequestRegistry<String>>>,
+    assessment_limiter: AssessmentLimiter,
+}
+
+#[derive(Clone)]
+struct AssessmentLimiter {
+    shared: Arc<(Mutex<usize>, Condvar)>,
+    maximum: usize,
+}
+
+struct AssessmentPermit {
+    shared: Arc<(Mutex<usize>, Condvar)>,
+}
+
+impl AssessmentLimiter {
+    fn new(maximum: usize) -> Self {
+        Self {
+            shared: Arc::new((Mutex::new(0), Condvar::new())),
+            maximum,
+        }
+    }
+
+    fn acquire(&self, cancellation: &CancellationToken) -> Result<AssessmentPermit, IpcErrorDto> {
+        let (active, available) = &*self.shared;
+        let mut count = active
+            .lock()
+            .map_err(|_| ipc_error("internal_error", "assessment limiter lock is poisoned"))?;
+        while *count >= self.maximum {
+            if cancellation.is_cancelled() {
+                return Err(ipc_error(
+                    "assessment_cancelled",
+                    "assessment was cancelled",
+                ));
+            }
+            let (next, _) = available
+                .wait_timeout(count, std::time::Duration::from_millis(50))
+                .map_err(|_| ipc_error("internal_error", "assessment limiter lock is poisoned"))?;
+            count = next;
+        }
+        *count += 1;
+        Ok(AssessmentPermit {
+            shared: Arc::clone(&self.shared),
+        })
+    }
+}
+
+impl Drop for AssessmentPermit {
+    fn drop(&mut self) {
+        let (active, available) = &*self.shared;
+        if let Ok(mut count) = active.lock() {
+            *count = count.saturating_sub(1);
+            available.notify_one();
+        }
+    }
 }
 
 struct PreviewArtifact {
@@ -138,19 +206,61 @@ impl DesktopState {
 
         let reconciliation_db =
             SqliteRepository::open(&directories.database()).map_err(display_error)?;
+        let directory_scope_id = directories.scope_id().map_err(display_error)?;
+        let instance_id = RunId::new().to_string();
+        let owner = ReservationOwner {
+            kind: ReservationOwnerKind::Desktop,
+            instance_id: instance_id.clone(),
+            directory_scope_id: directory_scope_id.clone(),
+            process_id: std::process::id(),
+            process_started_unix_seconds: current_process_started_unix_seconds(),
+        };
+        let recovery = RecoveryContext {
+            owner_kind: ReservationOwnerKind::Desktop,
+            instance_id,
+            directory_scope_id,
+            exclusive_scope_guard: true,
+        };
         let active_plan_repository = FileActivePlanRepository::new(directories.active_plan());
         let active_plan = foldry_application::ActivePlanRepository::load(&active_plan_repository)
             .map_err(display_error)?
             .unwrap_or_else(empty_plan);
-        reconcile_startup(
+        let plan_output_directories = output_directories(&active_plan);
+        let mut reconciliation_directories = plan_output_directories.clone();
+        reconciliation_directories.extend(
+            reconciliation_db
+                .known_directories()
+                .map_err(display_error)?,
+        );
+        let reconciliation = reconcile_startup(
             &reconciliation_db,
             SystemClock.now(),
-            &output_directories(&active_plan),
+            &reconciliation_directories,
             &directories.manifests(),
             24 * 60 * 60,
             &SystemProcessProbe,
+            &recovery,
         )
         .map_err(display_error)?;
+        let artifacts = &reconciliation.artifacts;
+        if reconciliation.interrupted_runs > 0
+            || artifacts.removed_reservations > 0
+            || artifacts.removed_temp_files > 0
+            || artifacts.removed_manifests > 0
+            || artifacts.retained_unverified > 0
+        {
+            eprintln!(
+                "Foldry startup recovery: interrupted_runs={}, removed_reservations={}, removed_temp_files={}, removed_manifests={}, retained_unverified={}",
+                reconciliation.interrupted_runs,
+                artifacts.removed_reservations,
+                artifacts.removed_temp_files,
+                artifacts.removed_manifests,
+                artifacts.retained_unverified,
+            );
+        }
+        reconciliation_db
+            .prune_except(&plan_output_directories)
+            .map_err(display_error)?;
 
         let services = Arc::new(
             ApplicationServices::bootstrap(ApplicationPorts {
@@ -180,7 +290,8 @@ impl DesktopState {
         let scheduler_repository =
             Arc::new(SqliteRepository::open(&directories.database()).map_err(display_error)?);
         let history: Arc<dyn RunHistoryRepository> = scheduler_repository.clone();
-        let logs: Arc<dyn LogRepository> = scheduler_repository;
+        let logs: Arc<dyn LogRepository> = scheduler_repository.clone();
+        let output_registry: Arc<dyn OutputDirectoryRegistry> = scheduler_repository;
         let max_parallel_runs = services
             .state()
             .map_err(display_error)?
@@ -192,7 +303,11 @@ impl DesktopState {
                 history,
                 logs,
                 clock: Arc::new(SystemClock),
-                executor: Arc::new(ArchiveRunExecutor::new(directories.manifests())),
+                executor: Arc::new(ArchiveRunExecutor::owned(
+                    directories.manifests(),
+                    owner,
+                    output_registry,
+                )),
                 events,
             },
             max_parallel_runs,
@@ -207,6 +322,8 @@ impl DesktopState {
             preview_requests: Arc::new(Mutex::new(LatestRequestRegistry::default())),
             browser_requests: Arc::new(Mutex::new(LatestRequestRegistry::default())),
             browser_size_requests: Arc::new(Mutex::new(LatestRequestRegistry::default())),
+            change_assessment_requests: Arc::new(Mutex::new(LatestRequestRegistry::default())),
+            assessment_limiter: AssessmentLimiter::new(2),
         })
     }
 
@@ -228,18 +345,24 @@ impl DesktopState {
             .iter()
             .map(Into::into)
             .collect();
+        let folder_summaries = self
+            .services
+            .folder_operational_summaries()
+            .map_err(ipc_use_case_error)?;
+        let folder_summaries = folder_summaries.iter().map(Into::into).collect();
         let roots = FileSystemBrowser::roots(home_directory().as_deref())
             .iter()
             .map(Into::into)
             .collect();
         Ok(BootstrapSnapshotDto {
-            version: 1,
+            version: 2,
             settings: (&state.settings).into(),
             plan: (&state.active_plan).into(),
             profiles: profiles.iter().map(Into::into).collect(),
             presets: presets.iter().map(Into::into).collect(),
             active_runs,
             recent_runs,
+            folder_summaries,
             previews: lock(&self.previews, "previews")?
                 .values()
                 .map(|preview| (&preview.snapshot).into())
@@ -334,18 +457,16 @@ impl DesktopState {
         let raw_size =
             FileSystemBrowser::directory_size(&preview.folder.source, &request.cancellation)
                 .map_err(|error| ipc_error("preview_error", error.to_string()))?;
-        let parsed = parse_profile(&preview.profile.text);
-        let profile = parsed.profile.ok_or_else(|| {
-            ipc_error_details(
-                "invalid_profile",
-                "profile cannot be used for preview",
-                json!(parsed.diagnostics),
-            )
-        })?;
+        let effective_profile = foldry_application::resolve_effective_profile(
+            &preview.profile.text,
+            &preview.folder.source,
+        )
+        .map_err(|error| ipc_error("invalid_profile", error.to_string()))?;
         let case = detect_case_sensitivity(&preview.folder.source)
             .map_err(|error| ipc_error("filesystem_error", error.to_string()))?;
-        let matcher = CompiledProfile::new(&profile, case.value)
-            .map_err(|message| ipc_error("invalid_profile", message))?;
+        let matcher =
+            CompiledProfile::from_snapshot(&effective_profile, &preview.folder.source, case.value)
+                .map_err(|message| ipc_error("invalid_profile", message))?;
         let cache_key = PreviewCacheKey::build(
             folder_id,
             action_id,
@@ -551,6 +672,77 @@ pub fn update_folder(
         .map_err(ipc_use_case_error)?;
     invalidate_folder_previews(state.inner(), folder.id)?;
     Ok((&folder).into())
+}
+
+#[tauri::command]
+pub fn locate_folder(
+    folder_id: String,
+    new_source: String,
+    state: State<'_, DesktopState>,
+) -> Result<FolderDto, IpcErrorDto> {
+    let folder_id = parse_id("folder", &folder_id)?;
+    let source = canonical_directory(&new_source)?;
+    let folder = state
+        .services
+        .locate_folder(folder_id, source)
+        .map_err(ipc_use_case_error)?;
+    invalidate_folder_previews(state.inner(), folder_id)?;
+    Ok((&folder).into())
+}
+
+#[tauri::command]
+pub fn probe_folder_availability(
+    folder_id: String,
+    generation: String,
+    state: State<'_, DesktopState>,
+) -> Result<FolderAvailabilityResultDto, IpcErrorDto> {
+    let folder_id = parse_id("folder", &folder_id)?;
+    let status = state
+        .services
+        .folder_availability(folder_id)
+        .map_err(ipc_use_case_error)?;
+    let (availability, diagnostic) = match status {
+        FolderAvailability::Available => (FolderAvailabilityDto::Available, None),
+        FolderAvailability::Missing => (FolderAvailabilityDto::Missing, None),
+        FolderAvailability::Unavailable(message) => {
+            (FolderAvailabilityDto::Unavailable, Some(message))
+        }
+    };
+    Ok(FolderAvailabilityResultDto {
+        folder_id: foldry_application::transport::FolderIdDto(folder_id.to_string()),
+        generation,
+        availability,
+        diagnostic,
+    })
+}
+
+#[tauri::command]
+pub fn open_source_folder(
+    folder_id: String,
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<(), IpcErrorDto> {
+    let folder_id = parse_id("folder", &folder_id)?;
+    let folder = state
+        .services
+        .state()
+        .map_err(ipc_use_case_error)?
+        .active_plan
+        .folders
+        .into_iter()
+        .find(|folder| folder.id == folder_id)
+        .ok_or_else(|| ipc_error("not_found", "folder was not found"))?;
+    let metadata = fs::symlink_metadata(&folder.source)
+        .map_err(|error| ipc_error("filesystem_error", error.to_string()))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(ipc_error(
+            "invalid_path",
+            "stored source is not a regular directory",
+        ));
+    }
+    app.opener()
+        .open_path(folder.source.to_string_lossy().into_owned(), None::<String>)
+        .map_err(|error| ipc_error("desktop_error", error.to_string()))
 }
 
 #[tauri::command]
@@ -976,6 +1168,382 @@ pub fn run_all_enabled(state: State<'_, DesktopState>) -> Result<Vec<RunRecordDt
 }
 
 #[tauri::command]
+pub fn run_changed(state: State<'_, DesktopState>) -> Result<RunChangedResultDto, IpcErrorDto> {
+    let plan = state
+        .services
+        .state()
+        .map_err(ipc_use_case_error)?
+        .active_plan;
+    let folder_ids = plan
+        .folders
+        .iter()
+        .map(|folder| folder.id)
+        .collect::<Vec<_>>();
+    let checkpoints = state
+        .services
+        .action_checkpoints(&folder_ids)
+        .map_err(ipc_use_case_error)?;
+    let active = state.scheduler.records().map_err(ipc_scheduler_error)?;
+    let profiles = state.services.profiles().map_err(ipc_use_case_error)?;
+    let mut result = RunChangedResultDto {
+        assessed: 0,
+        queued: 0,
+        unchanged: 0,
+        missing: 0,
+        invalid: 0,
+        already_running: 0,
+        output_conflict_skipped: 0,
+    };
+    let mut cache = HashMap::<(PathBuf, String), (String, String)>::new();
+    for folder in plan
+        .folders
+        .iter()
+        .filter(|folder| folder.listed && folder.enabled)
+    {
+        let available = matches!(
+            state
+                .services
+                .folder_availability(folder.id)
+                .map_err(ipc_use_case_error)?,
+            FolderAvailability::Available
+        );
+        for action in folder.actions.iter().filter(|action| action.enabled) {
+            result.assessed += 1;
+            if !available {
+                result.missing += 1;
+                continue;
+            }
+            if active.iter().any(|run| {
+                run.folder_id == folder.id
+                    && run.action_id == action.id
+                    && !foldry_application::is_terminal(run.state)
+            }) {
+                result.already_running += 1;
+                continue;
+            }
+            let profile_id = action.effective_profile_id(folder);
+            let Some(profile) = profiles
+                .iter()
+                .find(|profile| profile.id == Some(profile_id) && profile.valid)
+            else {
+                result.invalid += 1;
+                continue;
+            };
+            let text_hash = format!("{:x}", Sha256::digest(profile.text.as_bytes()));
+            let key = (folder.source.clone(), text_hash);
+            let (profile_hash, fingerprint) = if let Some(assessment) = cache.get(&key) {
+                assessment.clone()
+            } else {
+                match assess_source_fingerprint(
+                    state.inner(),
+                    folder,
+                    &profile.text,
+                    &CancellationToken::default(),
+                ) {
+                    Ok(assessment) => {
+                        cache.insert(key, assessment.clone());
+                        assessment
+                    }
+                    Err(_) => {
+                        result.invalid += 1;
+                        continue;
+                    }
+                }
+            };
+            if checkpoints.iter().any(|checkpoint| {
+                checkpoint.folder_id == folder.id
+                    && checkpoint.action_id == action.id
+                    && checkpoint.source_fingerprint == fingerprint
+                    && checkpoint.effective_profile_hash == profile_hash
+            }) {
+                result.unchanged += 1;
+                continue;
+            }
+            if preflight_output_conflict(folder, action) {
+                result.output_conflict_skipped += 1;
+                continue;
+            }
+            let run = state
+                .services
+                .prepare_run_current(folder.id, action.id)
+                .map_err(ipc_use_case_error)?;
+            enqueue_if_queued(state.inner(), &run)?;
+            result.queued += 1;
+        }
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn recheck_changed(
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<ChangeAssessmentResultDto, IpcErrorDto> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || recheck_changed_blocking(&app, &state))
+        .await
+        .map_err(|error| ipc_error("assessment_worker_failed", error.to_string()))?
+}
+
+fn recheck_changed_blocking(
+    app: &AppHandle,
+    state: &DesktopState,
+) -> Result<ChangeAssessmentResultDto, IpcErrorDto> {
+    let plan = state
+        .services
+        .state()
+        .map_err(ipc_use_case_error)?
+        .active_plan;
+    let profiles = state.services.profiles().map_err(ipc_use_case_error)?;
+    let mut summaries = state
+        .services
+        .folder_operational_summaries()
+        .map_err(ipc_use_case_error)?;
+    let request = lock(
+        &state.change_assessment_requests,
+        "change assessment requests",
+    )?
+    .begin(CHANGE_ASSESSMENT_KEY.to_owned());
+    let generation = request.generation.to_string();
+    let (cancelled, completed) = refresh_change_states_cancellable(
+        state,
+        &plan,
+        &profiles,
+        &mut summaries,
+        &request.cancellation,
+        |completed, total, current_folder| {
+            let _ = app.emit(
+                CHANGE_ASSESSMENT_EVENT_NAME,
+                ChangeAssessmentProgressDto {
+                    generation: generation.clone(),
+                    completed,
+                    total,
+                    current_folder,
+                    cancelled: false,
+                    finished: false,
+                },
+            );
+        },
+    );
+    let current = lock(
+        &state.change_assessment_requests,
+        "change assessment requests",
+    )?
+    .finish(&CHANGE_ASSESSMENT_KEY.to_owned(), request.generation);
+    let cancelled = cancelled || !current;
+    let _ = app.emit(
+        CHANGE_ASSESSMENT_EVENT_NAME,
+        ChangeAssessmentProgressDto {
+            generation: generation.clone(),
+            completed,
+            total: plan.folders.len() as u64,
+            current_folder: None,
+            cancelled,
+            finished: true,
+        },
+    );
+    Ok(ChangeAssessmentResultDto {
+        generation,
+        cancelled,
+        summaries: summaries.iter().map(Into::into).collect(),
+    })
+}
+
+#[tauri::command]
+pub fn cancel_recheck_changed(state: State<'_, DesktopState>) -> Result<bool, IpcErrorDto> {
+    lock(
+        &state.change_assessment_requests,
+        "change assessment requests",
+    )
+    .map(|mut requests| requests.cancel(&CHANGE_ASSESSMENT_KEY.to_owned()))
+}
+
+fn assess_source_fingerprint(
+    state: &DesktopState,
+    folder: &Folder,
+    profile_text: &str,
+    cancellation: &CancellationToken,
+) -> Result<(String, String), IpcErrorDto> {
+    let _permit = state.assessment_limiter.acquire(cancellation)?;
+    let effective_profile =
+        foldry_application::resolve_effective_profile(profile_text, &folder.source)
+            .map_err(|error| ipc_error("invalid_profile", error.to_string()))?;
+    let case = detect_case_sensitivity(&folder.source)
+        .map_err(|error| ipc_error("filesystem_error", error.to_string()))?;
+    let matcher = CompiledProfile::from_snapshot(&effective_profile, &folder.source, case.value)
+        .map_err(|message| ipc_error("invalid_profile", message))?;
+    let id = format!("assessment-{}", RunId::new());
+    let (manifest, _) = scan_to_manifest(
+        &state.directories.manifests(),
+        &id,
+        &folder.source,
+        &matcher,
+        cancellation,
+    )
+    .map_err(|error| ipc_error("assessment_error", error.to_string()))?;
+    let fingerprint = fingerprint_manifest_cancellable(
+        &manifest,
+        &foldry_application::ExecutionControl::default(),
+        Some(cancellation),
+    )
+    .map_err(|error| ipc_error("assessment_error", error));
+    let _ = manifest.remove();
+    fingerprint.map(|fingerprint| (effective_profile.hash, fingerprint.digest))
+}
+
+fn refresh_change_states_cancellable(
+    state: &DesktopState,
+    plan: &Plan,
+    profiles: &[StoredProfile],
+    summaries: &mut [FolderOperationalSummary],
+    cancellation: &CancellationToken,
+    mut on_progress: impl FnMut(u64, u64, Option<String>),
+) -> (bool, u64) {
+    let folder_ids = plan
+        .folders
+        .iter()
+        .map(|folder| folder.id)
+        .collect::<Vec<_>>();
+    let Ok(checkpoints) = state.services.action_checkpoints(&folder_ids) else {
+        return (false, 0);
+    };
+    for summary in summaries
+        .iter_mut()
+        .filter(|summary| matches!(summary.availability, FolderAvailability::Available))
+    {
+        summary.change_state = ChangeState::Checking;
+    }
+    let mut cache = HashMap::<(PathBuf, String), Result<(String, String), ()>>::new();
+    let total = plan.folders.len() as u64;
+    let mut completed = 0_u64;
+    for folder in &plan.folders {
+        if cancellation.is_cancelled() {
+            return (true, completed);
+        }
+        on_progress(completed, total, Some(path_text(&folder.source)));
+        let Some(summary) = summaries
+            .iter_mut()
+            .find(|summary| summary.folder_id == folder.id)
+        else {
+            completed = completed.saturating_add(1);
+            on_progress(completed, total, None);
+            continue;
+        };
+        if !matches!(summary.availability, FolderAvailability::Available) {
+            completed = completed.saturating_add(1);
+            on_progress(completed, total, None);
+            continue;
+        }
+        let actions = folder
+            .actions
+            .iter()
+            .filter(|action| action.enabled)
+            .collect::<Vec<_>>();
+        if actions.is_empty() {
+            summary.change_state = ChangeState::Unchanged;
+            completed = completed.saturating_add(1);
+            on_progress(completed, total, None);
+            continue;
+        }
+        if actions.iter().any(|action| {
+            let profile_id = action.effective_profile_id(folder);
+            !profiles
+                .iter()
+                .any(|profile| profile.id == Some(profile_id) && profile.valid)
+        }) {
+            summary.change_state = ChangeState::Unknown;
+            completed = completed.saturating_add(1);
+            on_progress(completed, total, None);
+            continue;
+        }
+        if actions.iter().any(|action| {
+            !checkpoints.iter().any(|checkpoint| {
+                checkpoint.folder_id == folder.id && checkpoint.action_id == action.id
+            })
+        }) {
+            summary.change_state = ChangeState::NoCheckpoint;
+            completed = completed.saturating_add(1);
+            on_progress(completed, total, None);
+            continue;
+        }
+        let mut aggregate = ChangeState::Unchanged;
+        for action in actions {
+            let profile_id = action.effective_profile_id(folder);
+            let Some(profile) = profiles
+                .iter()
+                .find(|profile| profile.id == Some(profile_id) && profile.valid)
+            else {
+                aggregate = ChangeState::Unknown;
+                break;
+            };
+            let text_hash = format!("{:x}", Sha256::digest(profile.text.as_bytes()));
+            let assessment = cache
+                .entry((folder.source.clone(), text_hash))
+                .or_insert_with(|| {
+                    assess_source_fingerprint(state, folder, &profile.text, cancellation)
+                        .map_err(|_| ())
+                });
+            if cancellation.is_cancelled() {
+                return (true, completed);
+            }
+            let Ok((profile_hash, fingerprint)) = assessment else {
+                aggregate = ChangeState::Unknown;
+                break;
+            };
+            let changed = checkpoints
+                .iter()
+                .find(|checkpoint| {
+                    checkpoint.folder_id == folder.id && checkpoint.action_id == action.id
+                })
+                .is_none_or(|checkpoint| {
+                    checkpoint.source_fingerprint != *fingerprint
+                        || checkpoint.effective_profile_hash != *profile_hash
+                });
+            if changed {
+                aggregate = ChangeState::Changed;
+                break;
+            }
+        }
+        summary.change_state = aggregate;
+        completed = completed.saturating_add(1);
+        on_progress(completed, total, None);
+    }
+    (false, completed)
+}
+
+fn preflight_output_conflict(folder: &Folder, action: &foldry_application::FolderAction) -> bool {
+    let ActionSpec::Archive(action) = &action.spec else {
+        return false;
+    };
+    if action.output.conflict_policy != ConflictPolicy::Skip {
+        return false;
+    }
+    let Some(directory) = action.output.directory.resolve(&folder.source) else {
+        return false;
+    };
+    let Some(folder_name) = folder.source.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let name = action
+        .output
+        .filename
+        .replace("{folder}", folder_name)
+        .replace("{date}", &jiff::Zoned::now().date().to_string());
+    let extension = match action.output.format {
+        ArchiveFormat::Zip => ".zip",
+        ArchiveFormat::TarGz => ".tar.gz",
+        ArchiveFormat::TarZst => ".tar.zst",
+        ArchiveFormat::SevenZip => ".7z",
+    };
+    let filename = if name.to_ascii_lowercase().ends_with(extension) {
+        name
+    } else {
+        format!("{name}{extension}")
+    };
+    directory.join(filename).exists()
+}
+
+#[tauri::command]
 pub fn repeat_run(
     run_id: String,
     state: State<'_, DesktopState>,
@@ -991,11 +1559,11 @@ pub fn repeat_run(
 #[tauri::command]
 pub fn scheduler_snapshot(
     state: State<'_, DesktopState>,
-) -> Result<Vec<RunRecordDto>, IpcErrorDto> {
+) -> Result<SchedulerSnapshotDto, IpcErrorDto> {
     state
         .scheduler
-        .records()
-        .map(|runs| runs.iter().map(Into::into).collect())
+        .snapshot()
+        .map(|snapshot| (&snapshot).into())
         .map_err(ipc_scheduler_error)
 }
 
@@ -1175,6 +1743,26 @@ pub fn reveal_run_output(
     reveal_validated_artifact(&artifact.path, &app)
 }
 
+#[tauri::command]
+pub fn reveal_last_folder_output(
+    folder_id: String,
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<(), IpcErrorDto> {
+    let folder_id = parse_id("folder", &folder_id)?;
+    let summary = state
+        .services
+        .folder_operational_summaries()
+        .map_err(ipc_use_case_error)?
+        .into_iter()
+        .find(|summary| summary.folder_id == folder_id)
+        .ok_or_else(|| ipc_error("not_found", "folder was not found"))?;
+    let artifact = summary
+        .last_successful_artifact
+        .ok_or_else(|| ipc_error("not_found", "folder has no successful output artifact"))?;
+    reveal_validated_artifact(&artifact.path, &app)
+}
+
 fn reveal_validated_artifact(artifact: &Path, app: &AppHandle) -> Result<(), IpcErrorDto> {
     let metadata = fs::symlink_metadata(artifact)
         .map_err(|error| ipc_error("filesystem_error", error.to_string()))?;
@@ -1231,6 +1819,7 @@ fn ipc_use_case_error(error: UseCaseError) -> IpcErrorDto {
         UseCaseError::NotFound(message) => ipc_error("not_found", message),
         UseCaseError::Conflict(message) => ipc_error("conflict", message),
         UseCaseError::Invalid(message) => ipc_error("invalid_request", message),
+        UseCaseError::SourceUnavailable(message) => ipc_error("source_unavailable", message),
         UseCaseError::InvalidProfile {
             profile_id,
             diagnostics,
@@ -1490,7 +2079,7 @@ mod tests {
             .expect("desktop runtime");
 
         let snapshot = state.bootstrap().expect("bootstrap snapshot");
-        assert_eq!(snapshot.version, 1);
+        assert_eq!(snapshot.version, 2);
         assert!(!snapshot.profiles.is_empty());
         assert!(!snapshot.presets.is_empty());
         assert!(directories.database().is_file());

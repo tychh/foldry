@@ -18,16 +18,18 @@ use foldry_application::{
     ActionId, ActionSpec, ActionVersion, ActivePlanRepository, ApplicationPorts,
     ApplicationServices, ArchiveActionSpec, ArchiveFormat, ArchiveOutputDirectory,
     ArchiveOutputSpec, ChecksumAlgorithm, Clock, CompiledProfile, CompressionLevel, ConflictPolicy,
-    Extensions, Folder, FolderAction, FolderId, FolderSnapshot, LogRepository, PageRequest, Plan,
-    PlanVersion, PresetId, ProfileId, ResultSummary, RunEvent, RunEventKind, RunEventSink,
+    Extensions, Folder, FolderAction, FolderId, FolderSnapshot, LogRepository,
+    OutputDirectoryRegistry, PageRequest, Plan, PlanVersion, PresetId, ProfileId, ReservationOwner,
+    ReservationOwnerKind, ResultSummary, RunEvent, RunEventKind, RunEventSink,
     RunHistoryRepository, RunId, RunOutcome, RunRecord, RunSnapshot, RunState, Scheduler,
     SchedulerPorts, Settings, SystemClock, UuidIdGenerator, VerificationMode, VerificationSpec,
     detect_case_sensitivity, parse_profile,
 };
 use foldry_storage::{
     AppDirectories, ArchiveRunExecutor, DirectoryOverrides, FileActivePlanRepository,
-    FilePresetRepository, FileProfileRepository, FileSettingsRepository, SqliteRepository,
-    SystemProcessProbe, initialize_resource_copies, reconcile_startup, scan_to_manifest,
+    FilePresetRepository, FileProfileRepository, FileSettingsRepository, RecoveryContext,
+    SqliteRepository, SystemProcessProbe, current_process_started_unix_seconds,
+    initialize_resource_copies, reconcile_startup, scan_to_manifest,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -181,6 +183,8 @@ enum FormatArg {
     Zip,
     TarGz,
     TarZst,
+    #[value(name = "7z")]
+    SevenZip,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -483,14 +487,34 @@ struct Runtime {
     directories: AppDirectories,
     resources: PathBuf,
     services: ApplicationServices,
+    owner: ReservationOwner,
 }
 
 impl Runtime {
     fn open(cli: &Cli) -> Result<Self, CliError> {
+        let (Some(config), Some(data), Some(cache)) = (
+            cli.config_dir.clone(),
+            cli.data_dir.clone(),
+            cli.cache_dir.clone(),
+        ) else {
+            return Err(CliError::config(
+                "the internal CLI requires explicit --config-dir, --data-dir, and --cache-dir overrides",
+            ));
+        };
+        let desktop_directories = AppDirectories::resolve(&DirectoryOverrides::default())
+            .map_err(|error| CliError::config(error.to_string()))?;
+        if config == desktop_directories.config
+            && data == desktop_directories.data
+            && cache == desktop_directories.cache
+        {
+            return Err(CliError::config(
+                "CLI directory overrides must not match the desktop directory scope",
+            ));
+        }
         let directories = AppDirectories::resolve(&DirectoryOverrides {
-            config: cli.config_dir.clone(),
-            data: cli.data_dir.clone(),
-            cache: cli.cache_dir.clone(),
+            config: Some(config),
+            data: Some(data),
+            cache: Some(cache),
         })
         .map_err(|error| CliError::config(error.to_string()))?;
         directories
@@ -500,6 +524,24 @@ impl Runtime {
         initialize_resource_copies(&resources, &directories.config)
             .map_err(|error| CliError::io(error.to_string()))?;
 
+        let directory_scope_id = directories
+            .scope_id()
+            .map_err(|error| CliError::io(error.to_string()))?;
+        let instance_id = RunId::new().to_string();
+        let owner = ReservationOwner {
+            kind: ReservationOwnerKind::Cli,
+            instance_id: instance_id.clone(),
+            directory_scope_id: directory_scope_id.clone(),
+            process_id: std::process::id(),
+            process_started_unix_seconds: current_process_started_unix_seconds(),
+        };
+        let recovery = RecoveryContext {
+            owner_kind: ReservationOwnerKind::Cli,
+            instance_id,
+            directory_scope_id,
+            exclusive_scope_guard: false,
+        };
+
         let reconciliation_db =
             SqliteRepository::open(&directories.database()).map_err(repository_error)?;
         let active_repository = FileActivePlanRepository::new(directories.active_plan());
@@ -507,7 +549,13 @@ impl Runtime {
             .load()
             .map_err(repository_error)?
             .unwrap_or_else(empty_plan);
-        let output_directories = output_directories(&plan);
+        let plan_output_directories = output_directories(&plan);
+        let mut output_directories = plan_output_directories.clone();
+        output_directories.extend(
+            reconciliation_db
+                .known_directories()
+                .map_err(repository_error)?,
+        );
         reconcile_startup(
             &reconciliation_db,
             SystemClock.now(),
@@ -515,8 +563,12 @@ impl Runtime {
             &directories.manifests(),
             24 * 60 * 60,
             &SystemProcessProbe,
+            &recovery,
         )
         .map_err(repository_error)?;
+        reconciliation_db
+            .prune_except(&plan_output_directories)
+            .map_err(repository_error)?;
 
         let services = ApplicationServices::bootstrap(ApplicationPorts {
             settings: Box::new(FileSettingsRepository::new(directories.settings())),
@@ -546,6 +598,7 @@ impl Runtime {
             directories,
             resources,
             services,
+            owner,
         })
     }
 
@@ -1249,6 +1302,7 @@ fn archive_command(
     let folder = Folder {
         id: FolderId::new(),
         source,
+        created_at: SystemClock.now(),
         listed: true,
         enabled: true,
         default_profile_id: profile_id,
@@ -1432,7 +1486,8 @@ fn execute_runs(
         SqliteRepository::open(&runtime.directories.database()).map_err(repository_error)?,
     );
     let history: Arc<dyn RunHistoryRepository> = repository.clone();
-    let logs: Arc<dyn LogRepository> = repository;
+    let logs: Arc<dyn LogRepository> = repository.clone();
+    let output_registry: Arc<dyn OutputDirectoryRegistry> = repository;
     let events = Arc::new(CliEvents {
         summaries: Mutex::new(HashMap::new()),
         changed: Condvar::new(),
@@ -1451,7 +1506,11 @@ fn execute_runs(
             history,
             logs,
             clock: Arc::new(SystemClock),
-            executor: Arc::new(ArchiveRunExecutor::new(runtime.directories.manifests())),
+            executor: Arc::new(ArchiveRunExecutor::owned(
+                runtime.directories.manifests(),
+                runtime.owner.clone(),
+                output_registry,
+            )),
             events: event_sink,
         },
         limit,
@@ -1546,6 +1605,12 @@ fn queued_run(
     settings: Settings,
     profile_text: String,
 ) -> RunRecord {
+    let effective_profile =
+        foldry_application::resolve_effective_profile(&profile_text, &folder.source).ok();
+    let profile_hash = effective_profile.as_ref().map_or_else(
+        || format!("{:x}", Sha256::digest(profile_text.as_bytes())),
+        |snapshot| snapshot.hash.clone(),
+    );
     RunRecord {
         run_id: RunId::new(),
         folder_id: folder.id,
@@ -1561,8 +1626,9 @@ fn queued_run(
             action,
             effective_profile_id,
             settings,
-            profile_hash: format!("{:x}", Sha256::digest(profile_text.as_bytes())),
+            profile_hash,
             profile_text,
+            effective_profile,
         },
         summary: None,
     }
@@ -1727,6 +1793,7 @@ impl From<FormatArg> for ArchiveFormat {
             FormatArg::Zip => Self::Zip,
             FormatArg::TarGz => Self::TarGz,
             FormatArg::TarZst => Self::TarZst,
+            FormatArg::SevenZip => Self::SevenZip,
         }
     }
 }

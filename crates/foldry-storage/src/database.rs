@@ -5,13 +5,14 @@ use std::{
 };
 
 use foldry_application::{
-    ActionId, FolderId, LogRecord, LogRepository, PageRequest, RepositoryError,
-    RunHistoryRepository, RunId, RunRecord,
+    ActionCheckpoint, ActionId, ActionOperationalState, FolderId, LogRecord, LogRepository,
+    OutputDirectoryRegistry, PageRequest, RepositoryError, RunHistoryRepository, RunId, RunRecord,
+    TerminalRunCommit,
 };
 use jiff::Timestamp;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 3;
 
 pub struct SqliteRepository {
     connection: Mutex<Connection>,
@@ -54,7 +55,7 @@ impl SqliteRepository {
 }
 
 fn migrate(connection: &Connection) -> Result<(), RepositoryError> {
-    let version = connection
+    let mut version = connection
         .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
         .map_err(repository_error)?;
     if version > SCHEMA_VERSION {
@@ -62,15 +63,14 @@ fn migrate(connection: &Connection) -> Result<(), RepositoryError> {
             "database schema {version} is newer than supported schema {SCHEMA_VERSION}"
         )));
     }
-    if version == SCHEMA_VERSION {
-        return Ok(());
-    }
-    let transaction = connection
-        .unchecked_transaction()
-        .map_err(repository_error)?;
-    transaction
-        .execute_batch(
-            "
+    while version < SCHEMA_VERSION {
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(repository_error)?;
+        match version + 1 {
+            1 => transaction
+                .execute_batch(
+                    "
             CREATE TABLE runs (
                 run_id TEXT PRIMARY KEY,
                 folder_id TEXT NOT NULL,
@@ -105,9 +105,120 @@ fn migrate(connection: &Connection) -> Result<(), RepositoryError> {
             CREATE INDEX logs_run_sequence_idx ON logs(run_id, sequence);
             PRAGMA user_version = 1;
             ",
-        )
-        .map_err(repository_error)?;
-    transaction.commit().map_err(repository_error)
+                )
+                .map_err(repository_error)?,
+            2 => transaction
+                .execute_batch(
+                    "
+                    CREATE TABLE output_directories (
+                        path TEXT PRIMARY KEY,
+                        last_used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
+                    PRAGMA user_version = 2;
+                    ",
+                )
+                .map_err(repository_error)?,
+            3 => transaction
+                .execute_batch(
+                    "
+                    CREATE TABLE action_checkpoints (
+                        folder_id TEXT NOT NULL,
+                        action_id TEXT NOT NULL,
+                        algorithm_version INTEGER NOT NULL,
+                        source_fingerprint TEXT NOT NULL,
+                        effective_profile_hash TEXT NOT NULL,
+                        source_summary_json TEXT NOT NULL,
+                        run_id TEXT NOT NULL,
+                        completed_at TEXT NOT NULL,
+                        PRIMARY KEY (folder_id, action_id)
+                    );
+                    CREATE INDEX action_checkpoints_folder_idx
+                        ON action_checkpoints(folder_id);
+                    CREATE TABLE action_operational_state (
+                        folder_id TEXT NOT NULL,
+                        action_id TEXT NOT NULL,
+                        latest_run_id TEXT NOT NULL,
+                        latest_outcome TEXT NOT NULL,
+                        latest_finished_at TEXT NOT NULL,
+                        last_successful_artifact_json TEXT,
+                        PRIMARY KEY (folder_id, action_id)
+                    );
+                    CREATE INDEX action_operational_state_folder_idx
+                        ON action_operational_state(folder_id);
+                    PRAGMA user_version = 3;
+                    ",
+                )
+                .map_err(repository_error)?,
+            target => {
+                return Err(RepositoryError::new(format!(
+                    "missing database migration to schema {target}"
+                )));
+            }
+        }
+        transaction.commit().map_err(repository_error)?;
+        version += 1;
+    }
+    Ok(())
+}
+
+impl OutputDirectoryRegistry for SqliteRepository {
+    fn register(&self, directory: &Path) -> Result<(), RepositoryError> {
+        let canonical = std::fs::canonicalize(directory).map_err(repository_error)?;
+        if !canonical.is_dir() {
+            return Err(RepositoryError::new(format!(
+                "output directory is not a directory: {}",
+                canonical.display()
+            )));
+        }
+        self.connection()?
+            .execute(
+                "INSERT INTO output_directories(path, last_used_at)
+                 VALUES (?1, CURRENT_TIMESTAMP)
+                 ON CONFLICT(path) DO UPDATE SET last_used_at = excluded.last_used_at",
+                [canonical.to_string_lossy().as_ref()],
+            )
+            .map(|_| ())
+            .map_err(repository_error)
+    }
+
+    fn known_directories(&self) -> Result<Vec<std::path::PathBuf>, RepositoryError> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare("SELECT path FROM output_directories ORDER BY path")
+            .map_err(repository_error)?;
+        statement
+            .query_map([], |row| {
+                row.get::<_, String>(0).map(std::path::PathBuf::from)
+            })
+            .map_err(repository_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(repository_error)
+    }
+
+    fn prune_except(&self, directories: &[std::path::PathBuf]) -> Result<u64, RepositoryError> {
+        let canonical = directories
+            .iter()
+            .filter_map(|directory| std::fs::canonicalize(directory).ok())
+            .map(|directory| directory.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let connection = self.connection()?;
+        let deleted = if canonical.is_empty() {
+            connection
+                .execute("DELETE FROM output_directories", [])
+                .map_err(repository_error)?
+        } else {
+            let placeholders = std::iter::repeat_n("?", canonical.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            connection
+                .execute(
+                    &format!("DELETE FROM output_directories WHERE path NOT IN ({placeholders})"),
+                    rusqlite::params_from_iter(canonical.iter()),
+                )
+                .map_err(repository_error)?
+        };
+        Ok(u64::try_from(deleted).unwrap_or(u64::MAX))
+    }
 }
 
 impl RunHistoryRepository for SqliteRepository {
@@ -122,6 +233,80 @@ impl RunHistoryRepository for SqliteRepository {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(repository_error)?;
         write_run(&transaction, run, true)?;
+        transaction.commit().map_err(repository_error)
+    }
+
+    fn commit_terminal_run(&self, commit: &TerminalRunCommit) -> Result<(), RepositoryError> {
+        let finished_at = commit
+            .run
+            .finished_at
+            .ok_or_else(|| RepositoryError::new("terminal run requires finished_at"))?;
+        let summary = commit
+            .run
+            .summary
+            .as_ref()
+            .ok_or_else(|| RepositoryError::new("terminal run requires summary"))?;
+        let artifact_json = summary
+            .artifact
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(repository_error)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(repository_error)?;
+        write_run(&transaction, &commit.run, true)?;
+        transaction
+            .execute(
+                "INSERT INTO action_operational_state
+                 (folder_id, action_id, latest_run_id, latest_outcome, latest_finished_at,
+                  last_successful_artifact_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(folder_id, action_id) DO UPDATE SET
+                   latest_run_id = excluded.latest_run_id,
+                   latest_outcome = excluded.latest_outcome,
+                   latest_finished_at = excluded.latest_finished_at,
+                   last_successful_artifact_json = COALESCE(
+                     excluded.last_successful_artifact_json,
+                     action_operational_state.last_successful_artifact_json
+                   )",
+                params![
+                    commit.run.folder_id.to_string(),
+                    commit.run.action_id.to_string(),
+                    commit.run.run_id.to_string(),
+                    enum_text(&summary.outcome)?,
+                    finished_at.to_string(),
+                    artifact_json,
+                ],
+            )
+            .map_err(repository_error)?;
+        if let Some(checkpoint) = &commit.checkpoint {
+            transaction
+                .execute(
+                    "INSERT INTO action_checkpoints
+                     (folder_id, action_id, algorithm_version, source_fingerprint,
+                      effective_profile_hash, source_summary_json, run_id, completed_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                     ON CONFLICT(folder_id, action_id) DO UPDATE SET
+                       algorithm_version = excluded.algorithm_version,
+                       source_fingerprint = excluded.source_fingerprint,
+                       effective_profile_hash = excluded.effective_profile_hash,
+                       source_summary_json = excluded.source_summary_json,
+                       run_id = excluded.run_id,
+                       completed_at = excluded.completed_at",
+                    params![
+                        checkpoint.folder_id.to_string(),
+                        checkpoint.action_id.to_string(),
+                        checkpoint.algorithm_version,
+                        checkpoint.source_fingerprint,
+                        checkpoint.effective_profile_hash,
+                        serde_json::to_string(&checkpoint.source_summary)
+                            .map_err(repository_error)?,
+                        checkpoint.run_id.to_string(),
+                        checkpoint.completed_at.to_string(),
+                    ],
+                )
+                .map_err(repository_error)?;
+        }
         transaction.commit().map_err(repository_error)
     }
 
@@ -268,6 +453,116 @@ impl RunHistoryRepository for SqliteRepository {
             .map_err(repository_error)?;
         transaction.commit().map_err(repository_error)?;
         Ok((age_deleted + count_deleted) as u64)
+    }
+
+    fn operational_states(
+        &self,
+        folder_ids: &[FolderId],
+    ) -> Result<Vec<ActionOperationalState>, RepositoryError> {
+        if folder_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let requested = folder_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let placeholders = std::iter::repeat_n("?", requested.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT folder_id, action_id, latest_run_id, latest_outcome,
+                        latest_finished_at, last_successful_artifact_json
+                 FROM action_operational_state
+                 WHERE folder_id IN ({placeholders})
+                 ORDER BY folder_id, action_id",
+            ))
+            .map_err(repository_error)?;
+        statement
+            .query_map(rusqlite::params_from_iter(requested.iter()), |row| {
+                Ok(ActionOperationalState {
+                    folder_id: parse_field(row.get::<_, String>(0)?)?,
+                    action_id: parse_field(row.get::<_, String>(1)?)?,
+                    latest_run_id: parse_field(row.get::<_, String>(2)?)?,
+                    latest_outcome: parse_enum(row.get::<_, String>(3)?)?,
+                    latest_finished_at: parse_field(row.get::<_, String>(4)?)?,
+                    last_successful_artifact: row
+                        .get::<_, Option<String>>(5)?
+                        .map(parse_json)
+                        .transpose()?,
+                })
+            })
+            .map_err(repository_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(repository_error)
+    }
+
+    fn checkpoints(
+        &self,
+        folder_ids: &[FolderId],
+    ) -> Result<Vec<ActionCheckpoint>, RepositoryError> {
+        if folder_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let requested = folder_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let placeholders = std::iter::repeat_n("?", requested.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT folder_id, action_id, algorithm_version, source_fingerprint,
+                        effective_profile_hash, source_summary_json, run_id, completed_at
+                 FROM action_checkpoints
+                 WHERE folder_id IN ({placeholders})
+                 ORDER BY folder_id, action_id",
+            ))
+            .map_err(repository_error)?;
+        statement
+            .query_map(rusqlite::params_from_iter(requested.iter()), |row| {
+                let algorithm_version = row.get::<_, i64>(2)?;
+                Ok(ActionCheckpoint {
+                    folder_id: parse_field(row.get::<_, String>(0)?)?,
+                    action_id: parse_field(row.get::<_, String>(1)?)?,
+                    algorithm_version: u16::try_from(algorithm_version)
+                        .map_err(sql_decode_error)?,
+                    source_fingerprint: row.get(3)?,
+                    effective_profile_hash: row.get(4)?,
+                    source_summary: parse_json(row.get::<_, String>(5)?)?,
+                    run_id: parse_field(row.get::<_, String>(6)?)?,
+                    completed_at: parse_field(row.get::<_, String>(7)?)?,
+                })
+            })
+            .map_err(repository_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(repository_error)
+    }
+
+    fn forget_action(
+        &self,
+        folder_id: FolderId,
+        action_id: foldry_application::ActionId,
+    ) -> Result<(), RepositoryError> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(repository_error)?;
+        let parameters = params![folder_id.to_string(), action_id.to_string()];
+        transaction
+            .execute(
+                "DELETE FROM action_checkpoints WHERE folder_id = ?1 AND action_id = ?2",
+                parameters,
+            )
+            .map_err(repository_error)?;
+        transaction
+            .execute(
+                "DELETE FROM action_operational_state WHERE folder_id = ?1 AND action_id = ?2",
+                params![folder_id.to_string(), action_id.to_string()],
+            )
+            .map_err(repository_error)?;
+        transaction.commit().map_err(repository_error)
     }
 }
 

@@ -3,6 +3,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type {
   BootstrapSnapshot,
+  ChangeAssessmentProgress,
+  ChangeAssessmentResult,
   BrowserChildren,
   BrowserNode,
   BrowserSize,
@@ -19,16 +21,23 @@ import type {
   Folder,
   FolderAction,
   FolderAddResult,
+  FolderAvailabilityResult,
+  RunChangedResult,
+  SchedulerSnapshot,
 } from "../contracts/generated";
 import { isTerminalRunState } from "../runs/runState";
 
 export const RUN_EVENT_NAME = "foldry://run-event";
+export const CHANGE_ASSESSMENT_EVENT_NAME = "foldry://change-assessment-event";
 const DEFAULT_PROFILE_FILENAME = "default.packignore";
 const DEFAULT_PROFILE_ID = "0190f5f0-7f8b-7d80-a120-4f4f9fe95c20";
 
 export type DesktopCommand =
   | "bootstrap_snapshot"
   | "run_all_enabled"
+  | "run_changed"
+  | "recheck_changed"
+  | "cancel_recheck_changed"
   | "pause_all"
   | "stop_all"
   | "create_profile"
@@ -44,6 +53,9 @@ export type DesktopCommand =
   | "pick_folders"
   | "add_folder"
   | "update_folder"
+  | "locate_folder"
+  | "probe_folder_availability"
+  | "open_source_folder"
   | "unlist_folder"
   | "unlisted_folders"
   | "forget_folders"
@@ -74,7 +86,8 @@ export type DesktopCommand =
   | "logs_page"
   | "export_run_logs"
   | "repeat_run"
-  | "reveal_run_output";
+  | "reveal_run_output"
+  | "reveal_last_folder_output";
 
 export type DesktopCommandArgs = Record<string, unknown>;
 
@@ -83,6 +96,9 @@ export interface DesktopClient {
   bootstrap(): Promise<BootstrapSnapshot>;
   command<T>(name: DesktopCommand, args?: DesktopCommandArgs): Promise<T>;
   listenRunEvents(handler: (event: RunEvent) => void): Promise<UnlistenFn>;
+  listenChangeAssessmentEvents(
+    handler: (event: ChangeAssessmentProgress) => void,
+  ): Promise<UnlistenFn>;
 }
 
 class TauriDesktopClient implements DesktopClient {
@@ -98,6 +114,15 @@ class TauriDesktopClient implements DesktopClient {
 
   listenRunEvents(handler: (event: RunEvent) => void): Promise<UnlistenFn> {
     return listen<RunEvent>(RUN_EVENT_NAME, (event) => handler(event.payload));
+  }
+
+  listenChangeAssessmentEvents(
+    handler: (event: ChangeAssessmentProgress) => void,
+  ): Promise<UnlistenFn> {
+    return listen<ChangeAssessmentProgress>(
+      CHANGE_ASSESSMENT_EVENT_NAME,
+      (event) => handler(event.payload),
+    );
   }
 }
 
@@ -295,6 +320,22 @@ class BrowserPreviewClient implements DesktopClient {
       }
       this.snapshot.plan.folders[index] = folder;
       result = folder;
+    } else if (name === "locate_folder") {
+      const folder = this.requireFolder(String(args.folderId));
+      folder.source = String(args.newSource);
+      result = structuredClone(folder);
+    } else if (name === "probe_folder_availability") {
+      result = {
+        folder_id: String(args.folderId),
+        generation: String(args.generation),
+        availability: "available",
+        diagnostic: null,
+      } satisfies FolderAvailabilityResult;
+    } else if (
+      name === "open_source_folder" ||
+      name === "reveal_last_folder_output"
+    ) {
+      result = undefined;
     } else if (name === "unlist_folder") {
       const index = this.snapshot.plan.folders.findIndex(
         (folder) => folder.id === String(args.folderId),
@@ -437,6 +478,32 @@ class BrowserPreviewClient implements DesktopClient {
         );
       this.snapshot.active_runs.push(...runs);
       result = runs;
+    } else if (name === "run_changed") {
+      const eligible = this.snapshot.plan.folders
+        .filter((folder) => folder.listed && folder.enabled)
+        .flatMap((folder) =>
+          folder.actions
+            .filter((action) => action.enabled)
+            .map((action) => ({ folder, action })),
+        );
+      const runs = eligible.map(({ folder, action }, index) =>
+        previewRun(
+          folder,
+          action,
+          nextPreviewRunId(this.snapshot.active_runs.length + index),
+          "queued",
+        ),
+      );
+      this.snapshot.active_runs.push(...runs);
+      result = {
+        assessed: BigInt(eligible.length),
+        queued: BigInt(runs.length),
+        unchanged: 0n,
+        missing: 0n,
+        invalid: 0n,
+        already_running: 0n,
+        output_conflict_skipped: 0n,
+      } satisfies RunChangedResult;
     } else if (name === "run_folder") {
       const folder = this.snapshot.plan.folders.find(
         (candidate) => candidate.id === String(args.folderId),
@@ -566,8 +633,28 @@ class BrowserPreviewClient implements DesktopClient {
       } satisfies PreviewPage;
     } else if (name === "cancel_preview") {
       result = true;
+    } else if (name === "recheck_changed") {
+      result = {
+        generation: "1",
+        cancelled: false,
+        summaries: structuredClone(this.snapshot.folder_summaries),
+      } satisfies ChangeAssessmentResult;
+    } else if (name === "cancel_recheck_changed") {
+      result = false;
     } else if (name === "scheduler_snapshot") {
-      result = structuredClone(this.snapshot.active_runs);
+      const runs = this.snapshot.active_runs.filter(
+        (run) => !isTerminalRunState(run.state),
+      );
+      let position = 0n;
+      result = {
+        runs: runs.map((record) => ({
+          record: structuredClone(record),
+          queue_position: record.state === "queued" ? (position += 1n) : null,
+        })),
+        globally_paused: runs.some((run) => run.state === "paused"),
+        active: BigInt(runs.filter((run) => run.state !== "queued").length),
+        waiting: BigInt(runs.filter((run) => run.state === "queued").length),
+      } satisfies SchedulerSnapshot;
     } else if (name === "history_page") {
       const offset = Number(args.offset ?? 0);
       const limit = Number(args.limit ?? 50);
@@ -649,6 +736,13 @@ class BrowserPreviewClient implements DesktopClient {
     return () => undefined;
   }
 
+  async listenChangeAssessmentEvents(
+    _handler: (event: ChangeAssessmentProgress) => void,
+  ): Promise<UnlistenFn> {
+    void _handler;
+    return () => undefined;
+  }
+
   private requireProfile(id: string): StoredProfile {
     const profile = this.snapshot.profiles.find((item) => item.id === id);
     if (!profile) {
@@ -724,6 +818,7 @@ class BrowserPreviewClient implements DesktopClient {
     const folder: Folder = {
       id: nextPreviewFolderId(this.snapshot.plan.folders.length),
       source: path,
+      created_at: new Date().toISOString(),
       listed: true,
       enabled: true,
       default_profile_id: profileId,
@@ -788,6 +883,7 @@ function archiveFolder(
   return {
     id,
     source,
+    created_at: "2026-07-27T00:00:00Z",
     listed: true,
     enabled: true,
     default_profile_id: profileId,
@@ -865,6 +961,7 @@ function snapshotFolderAsCurrent(
 ): Folder {
   return {
     ...folder,
+    created_at: "1970-01-01T00:00:00Z",
     listed: false,
     enabled: false,
     default_profile_id: DEFAULT_PROFILE_ID,
@@ -875,7 +972,7 @@ function snapshotFolderAsCurrent(
 
 function previewSettings(): BootstrapSnapshot["settings"] {
   return {
-    version: 1,
+    version: 2,
     locale: "en",
     appearance: "system",
     default_profile_id: DEFAULT_PROFILE_ID,
@@ -907,6 +1004,7 @@ function previewSettings(): BootstrapSnapshot["settings"] {
       extensions: {},
     },
     browser: { favorites: [], recent: [], view: "tree", extensions: {} },
+    folder_sort_mode: "oldest_added",
     extensions: {},
   };
 }
@@ -972,10 +1070,10 @@ function createPreviewSnapshot(): BootstrapSnapshot {
     profileId,
   );
   return {
-    version: 1,
+    version: 2,
     settings: previewSettings(),
     plan: {
-      version: 2,
+      version: 3,
       name: "Active plan",
       folders: [work, projects],
       extensions: {},
@@ -1042,6 +1140,7 @@ function createPreviewSnapshot(): BootstrapSnapshot {
         "failed",
       ),
     ],
+    folder_summaries: [],
     previews: [],
     roots: [
       {
@@ -1192,6 +1291,7 @@ function completedPreviewRun(
             extensions: {},
           }
         : null,
+    skip_reason: null,
   };
   return run;
 }

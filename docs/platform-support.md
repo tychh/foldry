@@ -35,7 +35,7 @@ Rust tests, workspace builds, and Tauri packaging.
 Before publishing a platform artifact, verify on a disposable source/output tree:
 
 - launch, folder picker, drag and drop, Favorites, Recent, Tree, and List;
-- ZIP, TAR.GZ, and TAR.ZST creation and independent extraction;
+- ZIP, TAR.GZ, TAR.ZST, and 7z creation and independent extraction;
 - overwrite, skip, increment, full verification, and checksum;
 - pause, resume, stop, restart recovery, history, and logs;
 - permission-denied and read-only destinations;

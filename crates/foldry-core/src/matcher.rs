@@ -1,11 +1,19 @@
-use std::{collections::HashMap, fmt, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fmt, fs, io,
+    path::{Path, PathBuf},
+};
 
 use ignore::{
     Match,
     gitignore::{Gitignore, GitignoreBuilder, Glob},
 };
+use sha2::{Digest, Sha256};
 
-use crate::{MatchDecision, MatchReason, MatchResult, Profile, ProfileRule};
+use crate::{
+    EffectiveProfileSnapshot, MatchDecision, MatchReason, MatchResult, Profile, ProfileRule,
+    ResolvedGitignore, RuleSource, parse_profile,
+};
 
 /// Case behavior supplied by the filesystem adapter.
 #[derive(Clone, Copy, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
@@ -20,6 +28,13 @@ pub struct CompiledProfile {
     profile_id: crate::ProfileId,
     matcher: Gitignore,
     rule_by_source: HashMap<PathBuf, ProfileRule>,
+    dynamic_matchers: Vec<DynamicMatcher>,
+    dynamic_enabled: bool,
+}
+
+struct DynamicMatcher {
+    directory: PathBuf,
+    matcher: Gitignore,
 }
 
 impl CompiledProfile {
@@ -47,12 +62,59 @@ impl CompiledProfile {
             profile_id: profile.id,
             matcher,
             rule_by_source,
+            dynamic_matchers: Vec::new(),
+            dynamic_enabled: false,
         })
+    }
+
+    /// Compiles an immutable effective snapshot, including dynamic rule sources.
+    pub fn from_snapshot(
+        snapshot: &EffectiveProfileSnapshot,
+        source: &Path,
+        case_sensitivity: FileSystemCaseSensitivity,
+    ) -> Result<Self, String> {
+        let mut compiled = Self::new(&snapshot.profile, case_sensitivity)?;
+        compiled.dynamic_enabled = !snapshot.profile.rule_sources.is_empty();
+        for resolved in &snapshot.resolved_gitignores {
+            let relative = normalize_relative_path(&resolved.relative_path)
+                .map_err(|error| error.to_string())?;
+            let relative = PathBuf::from(relative);
+            if relative.file_name().is_none_or(|name| name != ".gitignore") {
+                return Err("resolved gitignore path must name a .gitignore file".into());
+            }
+            let directory = relative.parent().unwrap_or_else(|| Path::new(""));
+            let mut builder = GitignoreBuilder::new(source.join(directory));
+            builder
+                .case_insensitive(case_sensitivity == FileSystemCaseSensitivity::Insensitive)
+                .map_err(|error| error.to_string())?;
+            for line in resolved.contents.lines() {
+                builder
+                    .add_line(Some(source.join(&relative)), line)
+                    .map_err(|error| error.to_string())?;
+            }
+            compiled.dynamic_matchers.push(DynamicMatcher {
+                directory: directory.to_path_buf(),
+                matcher: builder.build().map_err(|error| error.to_string())?,
+            });
+        }
+        Ok(compiled)
+    }
+
+    #[must_use]
+    pub fn requires_full_traversal(&self) -> bool {
+        self.dynamic_enabled
     }
 
     /// Matches one relative path and returns the exact last effective rule.
     pub fn matched(&self, path: &str, is_dir: bool) -> Result<MatchResult, MatchPathError> {
         let normalized = normalize_relative_path(path)?;
+        if self.dynamic_enabled && !self.gitignored(&normalized, is_dir) {
+            return Ok(MatchResult {
+                path: normalized,
+                decision: MatchDecision::Exclude,
+                reason: None,
+            });
+        }
         let components = normalized.split('/').collect::<Vec<_>>();
         let ancestor_count = components.len().saturating_sub(1);
 
@@ -75,6 +137,25 @@ impl CompiledProfile {
         Ok(result)
     }
 
+    fn gitignored(&self, normalized: &str, is_dir: bool) -> bool {
+        let path = Path::new(normalized);
+        let mut ignored = false;
+        for dynamic in &self.dynamic_matchers {
+            let Ok(relative) = path.strip_prefix(&dynamic.directory) else {
+                continue;
+            };
+            match dynamic
+                .matcher
+                .matched_path_or_any_parents(relative, is_dir)
+            {
+                Match::Ignore(_) => ignored = true,
+                Match::Whitelist(_) => ignored = false,
+                Match::None => {}
+            }
+        }
+        ignored
+    }
+
     fn result(&self, path: String, decision: MatchDecision, glob: &Glob) -> MatchResult {
         let rule = glob
             .from()
@@ -90,6 +171,189 @@ impl CompiledProfile {
             }),
         }
     }
+}
+
+#[derive(Debug)]
+pub enum EffectiveProfileError {
+    InvalidProfile(String),
+    Io { path: PathBuf, source: io::Error },
+    EscapedSource(PathBuf),
+}
+
+impl fmt::Display for EffectiveProfileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidProfile(message) => formatter.write_str(message),
+            Self::Io { path, source } => {
+                write!(formatter, "cannot read {}: {source}", path.display())
+            }
+            Self::EscapedSource(path) => write!(
+                formatter,
+                "dynamic rule source escaped Folder source: {}",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EffectiveProfileError {}
+
+/// Resolves all dynamic sources now so queued Runs remain immutable.
+pub fn resolve_effective_profile(
+    profile_text: &str,
+    source: &Path,
+) -> Result<EffectiveProfileSnapshot, EffectiveProfileError> {
+    let parsed = parse_profile(profile_text);
+    let profile = parsed.profile.ok_or_else(|| {
+        EffectiveProfileError::InvalidProfile(
+            parsed
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    })?;
+    let mut resolved_gitignores = Vec::new();
+    if profile.rule_sources.iter().any(|source| {
+        matches!(
+            source,
+            RuleSource::GitignoreExcludeUnignored { nested: true, .. }
+        )
+    }) {
+        collect_gitignores(source, source, &mut resolved_gitignores)?;
+        resolved_gitignores.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"foldry-effective-profile\0v1\0");
+    hash_field(&mut hasher, profile_text.as_bytes());
+    for resolved in &resolved_gitignores {
+        hash_field(&mut hasher, resolved.relative_path.as_bytes());
+        hash_field(&mut hasher, resolved.contents.as_bytes());
+    }
+    Ok(EffectiveProfileSnapshot {
+        profile,
+        resolved_gitignores,
+        hash: format!("{:x}", hasher.finalize()),
+    })
+}
+
+fn collect_gitignores(
+    root: &Path,
+    directory: &Path,
+    result: &mut Vec<ResolvedGitignore>,
+) -> Result<(), EffectiveProfileError> {
+    let canonical_root = fs::canonicalize(root).map_err(|source| EffectiveProfileError::Io {
+        path: root.to_path_buf(),
+        source,
+    })?;
+    let entries = fs::read_dir(directory).map_err(|source| EffectiveProfileError::Io {
+        path: directory.to_path_buf(),
+        source,
+    })?;
+    let mut entries =
+        entries
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| EffectiveProfileError::Io {
+                path: directory.to_path_buf(),
+                source,
+            })?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|source| EffectiveProfileError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            let canonical =
+                fs::canonicalize(&path).map_err(|source| EffectiveProfileError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            if !canonical.starts_with(&canonical_root) {
+                return Err(EffectiveProfileError::EscapedSource(path));
+            }
+            collect_gitignores_with_root(&canonical_root, root, &path, result)?;
+        } else if metadata.is_file() && entry.file_name() == ".gitignore" {
+            let contents =
+                fs::read_to_string(&path).map_err(|source| EffectiveProfileError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| EffectiveProfileError::EscapedSource(path.clone()))?;
+            result.push(ResolvedGitignore {
+                relative_path: relative.to_string_lossy().replace('\\', "/"),
+                contents,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn collect_gitignores_with_root(
+    canonical_root: &Path,
+    root: &Path,
+    directory: &Path,
+    result: &mut Vec<ResolvedGitignore>,
+) -> Result<(), EffectiveProfileError> {
+    let entries = fs::read_dir(directory).map_err(|source| EffectiveProfileError::Io {
+        path: directory.to_path_buf(),
+        source,
+    })?;
+    let mut entries =
+        entries
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| EffectiveProfileError::Io {
+                path: directory.to_path_buf(),
+                source,
+            })?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|source| EffectiveProfileError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            let canonical =
+                fs::canonicalize(&path).map_err(|source| EffectiveProfileError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            if !canonical.starts_with(canonical_root) {
+                return Err(EffectiveProfileError::EscapedSource(path));
+            }
+            collect_gitignores_with_root(canonical_root, root, &path, result)?;
+        } else if metadata.is_file() && entry.file_name() == ".gitignore" {
+            let contents =
+                fs::read_to_string(&path).map_err(|source| EffectiveProfileError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| EffectiveProfileError::EscapedSource(path.clone()))?;
+            result.push(ResolvedGitignore {
+                relative_path: relative.to_string_lossy().replace('\\', "/"),
+                contents,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn hash_field(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hasher.update(value);
 }
 
 /// Invalid path at the normalized matcher boundary.
@@ -143,6 +407,7 @@ pub fn normalize_relative_path(path: &str) -> Result<String, MatchPathError> {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
+    use tempfile::tempdir;
 
     use crate::{ProfileFormatVersion, ProfileId, parse_profile};
 
@@ -235,6 +500,61 @@ mod tests {
             insensitive.matched("readme.md", false).unwrap().decision,
             MatchDecision::Exclude
         );
+    }
+
+    #[test]
+    fn dynamic_gitignore_inverts_git_selection_and_honors_nested_negation() {
+        let source = tempdir().unwrap();
+        std::fs::create_dir_all(source.path().join("nested")).unwrap();
+        std::fs::write(source.path().join(".gitignore"), "*.log\nnested/*.tmp\n").unwrap();
+        std::fs::write(source.path().join("nested/.gitignore"), "!keep.tmp\n").unwrap();
+        let text = format!(
+            "# @profile-id {}\n# @profile-version 2\n# @profile-name Development\n\
+             # @rule-source gitignore mode=exclude-unignored nested=true\n",
+            ProfileId::new()
+        );
+        let snapshot = resolve_effective_profile(&text, source.path()).unwrap();
+        let matcher = CompiledProfile::from_snapshot(
+            &snapshot,
+            source.path(),
+            FileSystemCaseSensitivity::Sensitive,
+        )
+        .unwrap();
+
+        assert_eq!(
+            matcher.matched("debug.log", false).unwrap().decision,
+            MatchDecision::Include
+        );
+        assert_eq!(
+            matcher.matched("readme.md", false).unwrap().decision,
+            MatchDecision::Exclude
+        );
+        assert_eq!(
+            matcher.matched("nested/drop.tmp", false).unwrap().decision,
+            MatchDecision::Include
+        );
+        assert_eq!(
+            matcher.matched("nested/keep.tmp", false).unwrap().decision,
+            MatchDecision::Exclude
+        );
+        assert!(matcher.requires_full_traversal());
+    }
+
+    #[test]
+    fn dynamic_snapshot_hash_changes_with_gitignore_contents() {
+        let source = tempdir().unwrap();
+        let text = format!(
+            "# @profile-id {}\n# @profile-version 2\n# @profile-name Development\n\
+             # @rule-source gitignore mode=exclude-unignored nested=true\n",
+            ProfileId::new()
+        );
+        std::fs::write(source.path().join(".gitignore"), "target/\n").unwrap();
+        let before = resolve_effective_profile(&text, source.path()).unwrap();
+        std::fs::write(source.path().join(".gitignore"), "dist/\n").unwrap();
+        let after = resolve_effective_profile(&text, source.path()).unwrap();
+
+        assert_ne!(before.hash, after.hash);
+        assert_eq!(before.resolved_gitignores[0].contents, "target/\n");
     }
 
     #[test]

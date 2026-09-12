@@ -481,6 +481,7 @@ function ArchiveActionCard({
               { label: t("zip"), value: "zip" },
               { label: t("tarGz"), value: "tar_gz" },
               { label: t("tarZst"), value: "tar_zst" },
+              { label: t("sevenZip"), value: "7z" },
             ]}
             label={t("format")}
             value={archive.output.format}
@@ -789,6 +790,14 @@ function ArchiveActionCard({
                 {t("archiveHelpTarZst")}
               </Text>
             </Box>
+            <Box>
+              <Text fw={650} size="sm">
+                {t("sevenZip")}
+              </Text>
+              <Text c="dimmed" size="sm">
+                {t("archiveHelpSevenZip")}
+              </Text>
+            </Box>
           </Stack>
 
           <Alert color="yellow" title={t("archiveHelpLimitsTitle")}>
@@ -864,7 +873,7 @@ function unknownFilenameToken(value: string): boolean {
 function resolveFilenamePreview(
   template: string,
   source: string,
-  format: "zip" | "tar_gz" | "tar_zst",
+  format: "zip" | "tar_gz" | "tar_zst" | "7z",
 ): string {
   const date = new Intl.DateTimeFormat("en-CA", {
     year: "numeric",
@@ -875,7 +884,13 @@ function resolveFilenamePreview(
     .replaceAll("{folder}", basename(source))
     .replaceAll("{date}", date);
   const extension =
-    format === "zip" ? ".zip" : format === "tar_gz" ? ".tar.gz" : ".tar.zst";
+    format === "zip"
+      ? ".zip"
+      : format === "tar_gz"
+        ? ".tar.gz"
+        : format === "tar_zst"
+          ? ".tar.zst"
+          : ".7z";
   return name.toLocaleLowerCase().endsWith(extension)
     ? name
     : `${name}${extension}`;
