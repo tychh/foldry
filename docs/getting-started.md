@@ -7,12 +7,12 @@ Foldry 0.1.2 is distributed as a desktop application.
 Open [GitHub Releases](https://github.com/tychh/foldry/releases), choose version
 0.1.2 or newer, and download the package for your platform:
 
-| Platform            | Desktop package             |
-| ------------------- | --------------------------- |
-| Windows x64         | NSIS installer or MSI       |
-| macOS Intel         | x64 DMG with `Foldry.app`   |
-| macOS Apple Silicon | ARM64 DMG with `Foldry.app` |
-| Linux x64           | AppImage or Debian package  |
+| Platform            | Desktop package                  |
+| ------------------- | -------------------------------- |
+| Windows x64         | NSIS installer or MSI            |
+| macOS Intel         | x64 DMG with `Foldry.app`        |
+| macOS Apple Silicon | ARM64 DMG with `Foldry.app`      |
+| Linux x64           | AppImage, Debian package, or RPM |
 
 The initial release candidates may be unsigned. Verify the release checksum when
 one is provided and read the release notes before bypassing an operating-system

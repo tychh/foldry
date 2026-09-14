@@ -1,0 +1,69 @@
+name: Build artifacts
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Native platform to build
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - linux-x64
+          - macos-arm64
+          - macos-x64
+          - windows-x64
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-artifacts-${{ github.ref }}-${{ inputs.platform || 'all' }}
+  cancel-in-progress: true
+
+jobs:
+  select-matrix:
+    name: Select build matrix
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Select requested platforms
+        id: select
+        shell: bash
+        env:
+          PLATFORM: ${{ inputs.platform || 'all' }}
+        run: |
+          case "$PLATFORM" in
+            all)
+              matrix='{"include":[{"target":"linux-x64","name":"Linux x64 (Ubuntu 22.04 baseline)","os":"ubuntu-22.04","bundles":"deb,appimage,rpm"},{"target":"macos-arm64","name":"macOS Apple Silicon","os":"macos-15","bundles":"app,dmg"},{"target":"macos-x64","name":"macOS Intel","os":"macos-15-intel","bundles":"app,dmg"},{"target":"windows-x64","name":"Windows x64","os":"windows-2025","bundles":"msi,nsis"}]}'
+              ;;
+            linux-x64)
+              matrix='{"include":[{"target":"linux-x64","name":"Linux x64 (Ubuntu 22.04 baseline)","os":"ubuntu-22.04","bundles":"deb,appimage,rpm"}]}'
+              ;;
+            macos-arm64)
+              matrix='{"include":[{"target":"macos-arm64","name":"macOS Apple Silicon","os":"macos-15","bundles":"app,dmg"}]}'
+              ;;
+            macos-x64)
+              matrix='{"include":[{"target":"macos-x64","name":"macOS Intel","os":"macos-15-intel","bundles":"app,dmg"}]}'
+              ;;
+            windows-x64)
+              matrix='{"include":[{"target":"windows-x64","name":"Windows x64","os":"windows-2025","bundles":"msi,nsis"}]}'
+              ;;
+            *)
+              echo "Unsupported platform: $PLATFORM" >&2
+              exit 1
+              ;;
+          esac
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  native:
+    name: Native packages
+    needs: select-matrix
+    uses: ./.github/workflows/native-build.yml
+    with:
+      matrix_json: ${{ needs.select-matrix.outputs.matrix }}
+      retention_days: 14

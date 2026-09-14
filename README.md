@@ -66,7 +66,7 @@ Download the package for your platform from
 
 - Windows x64: NSIS installer or MSI;
 - macOS Intel or Apple Silicon: architecture-specific DMG;
-- Linux x64: AppImage or Debian package.
+- Linux x64: AppImage, Debian package, or RPM.
 
 Release candidates may initially be unsigned. Read the release notes and your
 operating system's warning before installing. See

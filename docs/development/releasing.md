@@ -16,7 +16,7 @@ Check it with:
 pnpm release:check
 ```
 
-## Candidate build
+## Candidate builds
 
 Run:
 
@@ -25,23 +25,43 @@ pnpm check
 pnpm desktop:build
 ```
 
-GitHub Actions repeats the complete quality gate and builds:
+Pull requests run the quality gate without producing native packages. Every push
+to `main` runs the quality gate and builds the complete native matrix:
 
-| Runner                  | Desktop artifacts        |
-| ----------------------- | ------------------------ |
-| Ubuntu 24.04 x64        | Debian package, AppImage |
-| Windows Server 2025 x64 | MSI, NSIS                |
-| macOS 15 Intel          | `.app`, x64 DMG          |
-| macOS 15 Apple Silicon  | `.app`, ARM64 DMG        |
+| Runner                  | Desktop artifacts             |
+| ----------------------- | ----------------------------- |
+| Ubuntu 22.04 x64        | Debian package, RPM, AppImage |
+| Windows Server 2025 x64 | MSI, NSIS                     |
+| macOS 15 Intel          | `.app`, x64 DMG               |
+| macOS 15 Apple Silicon  | `.app`, ARM64 DMG             |
 
-The current CI uploads native candidates as workflow artifacts for 14 days. A
-public GitHub Release is promoted manually until a dedicated signed release
-workflow is added.
+The **Build artifacts** workflow uploads native candidates as workflow artifacts
+for 14 days. For another branch, run it manually in GitHub Actions, select the
+branch, and choose either the complete matrix or one platform. The equivalent
+GitHub CLI request is:
+
+```bash
+gh workflow run artifacts.yml --ref <branch> -f platform=all
+```
 
 Version 0.1.2 distributes only the desktop packages listed above. The
 `foldry-cli` crate remains an internal development and test adapter and must not
 be uploaded as a release asset. Installer integration can be introduced in a
 later version as one coordinated desktop-and-CLI package.
+
+## Public release
+
+Pushing a matching `v*` tag repeats the quality gate and complete native build,
+creates `SHA256SUMS`, and immediately publishes a public GitHub Release with
+generated release notes. For example:
+
+```bash
+git tag v0.1.2
+git push origin v0.1.2
+```
+
+The tag version must exactly match the package metadata. The release workflow is
+not manually dispatchable and branch builds cannot publish a release.
 
 ## Promotion checklist
 
@@ -50,8 +70,9 @@ later version as one coordinated desktop-and-CLI package.
 3. Complete the manual checks in [Platform support](../platform-support.md).
 4. Confirm installers do not remove user configuration, history, or archives.
 5. Prepare concise release notes with changes and known limitations.
-6. Sign/notarize public installers or clearly mark them as unsigned candidates.
-7. Create tag `v<version>` and publish the matching GitHub Release assets.
+6. Sign/notarize public installers or clearly document that they are unsigned.
+7. Create and push tag `v<version>`; this immediately publishes the matching
+   GitHub Release assets.
 
 ## Signing
 
