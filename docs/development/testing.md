@@ -22,6 +22,24 @@ For native configuration, capabilities, icons, resources, or desktop integration
 pnpm desktop:build
 ```
 
+## Browser Preview end-to-end validation
+
+Playwright exercises the browser-preview client against the exact Vite development
+host used by the desktop shell. Install the pinned Chromium build once per machine,
+then run the release-oriented UI smoke:
+
+```bash
+pnpm --dir frontend exec playwright install chromium
+pnpm test:e2e
+```
+
+The suite starts `http://127.0.0.1:1420`, checks console health, horizontal
+overflow, keyboard and Drawer interactions, reduced-motion behavior, and WCAG A/AA
+rules. It also captures the light/dark 1024×700, 1280×800, and 1440×900 matrix in
+`/tmp/foldry-playwright-qa`; failure screenshots and traces go to
+`/tmp/foldry-playwright-results`. These browser-preview checks complement rather
+than replace the native multiplatform smoke matrix.
+
 ## Narrow commands
 
 ```bash
@@ -30,6 +48,7 @@ pnpm lint
 pnpm typecheck
 pnpm contracts:check
 pnpm test
+pnpm test:e2e
 pnpm build
 cargo test -p foldry-cli
 ```
@@ -73,6 +92,8 @@ Review thresholds, not product promises:
 - scanner at least 40,000 entries/s on the default fixture;
 - ZIP under 8 seconds;
 - TAR.GZ and TAR.ZST under 3 seconds;
+- 7z and fingerprint external-sort workloads are recorded alongside the existing
+  formats; compare regressions against the same machine rather than across hosts;
 - benchmark peak RSS under 64 MiB;
 - IPC, Preview, history, and log pages remain bounded.
 

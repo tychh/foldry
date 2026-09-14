@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    name: Native packages
+    uses: ./.github/workflows/native-build.yml
+    with:
+      matrix_json: '{"include":[{"target":"linux-x64","name":"Linux x64 (Ubuntu 22.04 baseline)","os":"ubuntu-22.04","bundles":"deb,appimage,rpm"},{"target":"macos-arm64","name":"macOS Apple Silicon","os":"macos-15","bundles":"app,dmg"},{"target":"macos-x64","name":"macOS Intel","os":"macos-15-intel","bundles":"app,dmg"},{"target":"windows-x64","name":"Windows x64","os":"windows-2025","bundles":"msi,nsis"}]}'
+      retention_days: 1
+
+  publish:
+    name: Publish GitHub Release
+    needs: native
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download native packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: foldry-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create SHA-256 checksums
+        shell: bash
+        working-directory: release-assets
+        run: sha256sum -- * > SHA256SUMS
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${{ github.ref_name }}"
+          release-assets/*
+          --repo "${{ github.repository }}"
+          --verify-tag
+          --generate-notes
+          --notes "The desktop packages in this release are currently unsigned. Verify downloads against SHA256SUMS before installation."
+          --title "Foldry ${{ github.ref_name }}"

@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     fmt,
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicUsize, Ordering},
@@ -13,7 +14,7 @@ use std::{
 use crate::{
     Clock, ExecutionControl, Extensions, FoldryError, FoldryWarning, LogLevel, LogRecord,
     LogRepository, ProgressSnapshot, RepositoryError, ResultSummary, RunEvent, RunEventKind,
-    RunHistoryRepository, RunId, RunOutcome, RunRecord, RunState,
+    RunHistoryRepository, RunId, RunOutcome, RunRecord, RunState, TerminalRunCommit,
 };
 
 pub trait RunExecutor: Send + Sync {
@@ -30,6 +31,7 @@ pub trait RunReporter: Send + Sync {
     fn warning(&self, warning: FoldryWarning);
     fn error(&self, error: FoldryError);
     fn log(&self, level: LogLevel, message: String, path: Option<String>);
+    fn checkpoint(&self, _checkpoint: crate::ActionCheckpoint) {}
 }
 
 pub trait RunEventSink: Send + Sync {
@@ -118,6 +120,8 @@ struct SchedulerState {
     globally_paused: bool,
     shutdown: bool,
     background_error: Option<String>,
+    persistence_error: Option<String>,
+    pending_terminal_updates: VecDeque<TerminalRunCommit>,
 }
 
 struct ManagedRun {
@@ -126,6 +130,21 @@ struct ManagedRun {
     event_sequence: u64,
     log_sequence: u64,
     last_progress_event: Option<Instant>,
+    checkpoint: Option<crate::ActionCheckpoint>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScheduledRun {
+    pub record: RunRecord,
+    pub queue_position: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SchedulerSnapshot {
+    pub runs: Vec<ScheduledRun>,
+    pub globally_paused: bool,
+    pub active: u64,
+    pub waiting: u64,
 }
 
 impl Scheduler {
@@ -180,6 +199,7 @@ impl Scheduler {
                 event_sequence: 0,
                 log_sequence: 0,
                 last_progress_event: None,
+                checkpoint: None,
             };
             let event = next_event(
                 &mut managed,
@@ -198,16 +218,26 @@ impl Scheduler {
     }
 
     pub fn record(&self, run_id: RunId) -> Result<RunRecord, SchedulerError> {
+        self.inner.retry_pending_persistence();
         self.check_health()?;
-        self.inner
+        if let Some(record) = self
+            .inner
             .lock_state()?
             .runs
             .get(&run_id)
             .map(|run| run.record.clone())
+        {
+            return Ok(record);
+        }
+        self.inner
+            .ports
+            .history
+            .get(run_id)?
             .ok_or(SchedulerError::RunNotFound(run_id))
     }
 
     pub fn records(&self) -> Result<Vec<RunRecord>, SchedulerError> {
+        self.inner.retry_pending_persistence();
         self.check_health()?;
         let mut records = self
             .inner
@@ -218,6 +248,46 @@ impl Scheduler {
             .collect::<Vec<_>>();
         records.sort_by_key(|run| (run.started_at, run.run_id));
         Ok(records)
+    }
+
+    pub fn snapshot(&self) -> Result<SchedulerSnapshot, SchedulerError> {
+        self.inner.retry_pending_persistence();
+        self.check_health()?;
+        let state = self.inner.lock_state()?;
+        let positions = state
+            .queue
+            .iter()
+            .enumerate()
+            .map(|(index, run_id)| (*run_id, u64::try_from(index + 1).unwrap_or(u64::MAX)))
+            .collect::<HashMap<_, _>>();
+        let mut runs = state
+            .runs
+            .values()
+            .filter(|run| !is_terminal(run.record.state))
+            .map(|run| ScheduledRun {
+                record: run.record.clone(),
+                queue_position: positions.get(&run.record.run_id).copied(),
+            })
+            .collect::<Vec<_>>();
+        runs.sort_by_key(|run| {
+            (
+                run.queue_position.is_some(),
+                run.queue_position.unwrap_or_default(),
+                run.record.started_at,
+                run.record.run_id,
+            )
+        });
+        Ok(SchedulerSnapshot {
+            active: u64::try_from(
+                runs.iter()
+                    .filter(|run| run.queue_position.is_none())
+                    .count(),
+            )
+            .unwrap_or(u64::MAX),
+            waiting: u64::try_from(positions.len()).unwrap_or(u64::MAX),
+            runs,
+            globally_paused: state.globally_paused,
+        })
     }
 
     pub fn set_max_parallel_runs(&self, max_parallel_runs: u16) -> Result<(), SchedulerError> {
@@ -294,6 +364,15 @@ impl Scheduler {
         }
     }
 
+    #[must_use]
+    pub fn persistence_error(&self) -> Option<String> {
+        self.inner
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| state.persistence_error.clone())
+    }
+
     fn non_terminal_run_ids(&self) -> Result<Vec<RunId>, SchedulerError> {
         Ok(self
             .inner
@@ -306,14 +385,24 @@ impl Scheduler {
 
     fn command_transition(&self, run_id: RunId, command: Command) -> Result<bool, SchedulerError> {
         self.check_health()?;
-        let (events, notify) = {
+        let (events, notify, remove_after_events) = {
             let mut state = self.inner.lock_state()?;
-            let current = state
-                .runs
-                .get(&run_id)
-                .ok_or(SchedulerError::RunNotFound(run_id))?
-                .record
-                .state;
+            let Some(current) = state.runs.get(&run_id).map(|run| run.record.state) else {
+                drop(state);
+                return match self.inner.ports.history.get(run_id)? {
+                    Some(run) if is_terminal(run.state) => Ok(false),
+                    _ => Err(SchedulerError::RunNotFound(run_id)),
+                };
+            };
+            if matches!(command, Command::Stop)
+                && matches!(
+                    current,
+                    RunState::Queued | RunState::Planning | RunState::Running | RunState::Paused
+                )
+                && !state.runs.get(&run_id).expect("run exists").control.stop()
+            {
+                return Ok(false);
+            }
             let (next, notify) = match (command, current) {
                 (Command::Pause, RunState::Planning | RunState::Running) => {
                     (Some(RunState::Paused), false)
@@ -335,40 +424,69 @@ impl Scheduler {
             if current == RunState::Queued {
                 state.queue.retain(|candidate| *candidate != run_id);
             }
-            let managed = state
-                .runs
-                .get_mut(&run_id)
-                .expect("run still exists after queue update");
-            match command {
-                Command::Pause => managed.control.pause(),
-                Command::Resume => managed.control.resume(),
-                Command::Stop => managed.control.stop(),
-            }
-            managed.record.state = next;
-            let state_event = next_event(
-                managed,
-                self.inner.ports.clock.now(),
-                RunEventKind::StateChanged { state: next },
-            );
-            let mut events = vec![state_event];
-            if next == RunState::Stopped {
-                let summary = stopped_summary();
-                managed.record.finished_at = Some(self.inner.ports.clock.now());
-                managed.record.summary = Some(summary.clone());
-                events.push(next_event(
+            let (events, record) = {
+                let managed = state
+                    .runs
+                    .get_mut(&run_id)
+                    .expect("run still exists after queue update");
+                match command {
+                    Command::Pause => managed.control.pause(),
+                    Command::Resume => managed.control.resume(),
+                    Command::Stop => {}
+                }
+                managed.record.state = next;
+                let state_event = next_event(
                     managed,
                     self.inner.ports.clock.now(),
-                    RunEventKind::Completed { summary },
-                ));
-            }
-            self.inner.ports.history.update(&managed.record)?;
+                    RunEventKind::StateChanged { state: next },
+                );
+                let mut events = vec![state_event];
+                if next == RunState::Stopped {
+                    let summary = stopped_summary();
+                    managed.record.finished_at = Some(self.inner.ports.clock.now());
+                    managed.record.summary = Some(summary.clone());
+                    events.push(next_event(
+                        managed,
+                        self.inner.ports.clock.now(),
+                        RunEventKind::Completed { summary },
+                    ));
+                }
+                (events, managed.record.clone())
+            };
+            let persistence = if is_terminal(record.state) {
+                self.inner
+                    .ports
+                    .history
+                    .commit_terminal_run(&TerminalRunCommit {
+                        run: record.clone(),
+                        checkpoint: None,
+                    })
+            } else {
+                self.inner.ports.history.update(&record)
+            };
+            let persisted = match persistence {
+                Ok(()) => true,
+                Err(error) => {
+                    state.persistence_error = Some(error.to_string());
+                    if is_terminal(record.state) {
+                        state.pending_terminal_updates.push_back(TerminalRunCommit {
+                            run: record,
+                            checkpoint: None,
+                        });
+                    }
+                    false
+                }
+            };
             if state.runs.values().all(|run| is_terminal(run.record.state)) {
                 state.globally_paused = false;
             }
-            (events, notify)
+            (events, notify, persisted && next == RunState::Stopped)
         };
         for event in events {
             self.inner.publish_event(event);
+        }
+        if remove_after_events && let Ok(mut state) = self.inner.state.lock() {
+            state.runs.remove(&run_id);
         }
         if notify {
             self.inner.wake.notify_all();
@@ -383,7 +501,7 @@ impl Drop for Scheduler {
             state.shutdown = true;
             for run in state.runs.values() {
                 if !is_terminal(run.record.state) {
-                    run.control.stop();
+                    let _ = run.control.stop();
                 }
             }
         }
@@ -415,6 +533,41 @@ impl SchedulerInner {
             state.background_error.get_or_insert_with(|| error.into());
         }
         self.wake.notify_all();
+    }
+
+    fn retry_pending_persistence(&self) {
+        loop {
+            let pending = self
+                .state
+                .lock()
+                .ok()
+                .and_then(|state| state.pending_terminal_updates.front().cloned());
+            let Some(pending) = pending else {
+                if let Ok(mut state) = self.state.lock() {
+                    state.persistence_error = None;
+                }
+                return;
+            };
+            if let Err(error) = self.ports.history.commit_terminal_run(&pending) {
+                if let Ok(mut state) = self.state.lock() {
+                    state.persistence_error = Some(error.to_string());
+                }
+                return;
+            }
+            if let Ok(mut state) = self.state.lock() {
+                if state
+                    .pending_terminal_updates
+                    .front()
+                    .is_some_and(|front| front.run.run_id == pending.run.run_id)
+                {
+                    state.pending_terminal_updates.pop_front();
+                    state.runs.remove(&pending.run.run_id);
+                }
+                if state.pending_terminal_updates.is_empty() {
+                    state.persistence_error = None;
+                }
+            }
+        }
     }
 
     fn report_event(&self, run_id: RunId, kind: RunEventKind) {
@@ -473,6 +626,7 @@ fn dispatch_events(receiver: mpsc::Receiver<EventMessage>, sink: Arc<dyn RunEven
 
 fn dispatch_loop(inner: Arc<SchedulerInner>) {
     loop {
+        inner.retry_pending_persistence();
         let dispatched = {
             let mut state = match inner.state.lock() {
                 Ok(state) => state,
@@ -483,10 +637,23 @@ fn dispatch_loop(inner: Arc<SchedulerInner>) {
                     || state.queue.is_empty()
                     || state.active_slots >= inner.max_parallel_runs.load(Ordering::Acquire))
             {
-                state = match inner.wake.wait(state) {
-                    Ok(state) => state,
-                    Err(_) => return,
-                };
+                if state.pending_terminal_updates.is_empty() {
+                    state = match inner.wake.wait(state) {
+                        Ok(state) => state,
+                        Err(_) => return,
+                    };
+                } else {
+                    let waited = inner.wake.wait_timeout(state, Duration::from_millis(250));
+                    let Ok((next, _)) = waited else {
+                        return;
+                    };
+                    drop(next);
+                    inner.retry_pending_persistence();
+                    state = match inner.state.lock() {
+                        Ok(state) => state,
+                        Err(_) => return,
+                    };
+                }
             }
             if state.shutdown {
                 return;
@@ -506,10 +673,7 @@ fn dispatch_loop(inner: Arc<SchedulerInner>) {
                 },
             );
             if let Err(error) = inner.ports.history.update(&managed.record) {
-                state.background_error = Some(error.to_string());
-                state.active_slots = state.active_slots.saturating_sub(1);
-                inner.wake.notify_all();
-                return;
+                state.persistence_error = Some(error.to_string());
             }
             (run_id, event)
         };
@@ -519,8 +683,8 @@ fn dispatch_loop(inner: Arc<SchedulerInner>) {
             .name(format!("foldry-run-{}", dispatched.0))
             .spawn(move || execute_run(worker_inner, dispatched.0))
         {
-            inner.store_background_error(error.to_string());
-            return;
+            let message = format!("failed to spawn run worker: {error}");
+            finish_run(&inner, dispatched.0, internal_failure_summary(message));
         }
     }
 }
@@ -551,16 +715,12 @@ fn execute_run(inner: Arc<SchedulerInner>, run_id: RunId) {
             RunState::Stopping => None,
             _ => None,
         };
-        if let Some((record, _, _)) = &prepared {
-            if let Err(error) = inner.ports.history.update(record) {
-                state.background_error = Some(error.to_string());
-                None
-            } else {
-                prepared
-            }
-        } else {
-            prepared
+        if let Some((record, _, _)) = &prepared
+            && let Err(error) = inner.ports.history.update(record)
+        {
+            state.persistence_error = Some(error.to_string());
         }
+        prepared
     };
     let Some((record, control, state_event)) = prepared else {
         finish_run(&inner, run_id, stopped_summary());
@@ -573,7 +733,20 @@ fn execute_run(inner: Arc<SchedulerInner>, run_id: RunId) {
         inner: Arc::clone(&inner),
         run_id,
     };
-    let summary = inner.ports.executor.execute(&record, &control, &reporter);
+    let summary = catch_unwind(AssertUnwindSafe(|| {
+        inner.ports.executor.execute(&record, &control, &reporter)
+    }))
+    .unwrap_or_else(|_| {
+        let error = FoldryError {
+            code: crate::ErrorCode::Internal,
+            message: "run executor panicked".into(),
+            retryable: false,
+            path: None,
+            extensions: Extensions::new(),
+        };
+        reporter.error(error.clone());
+        internal_failure_summary(error.message)
+    });
     finish_run(&inner, run_id, summary);
 }
 
@@ -583,45 +756,81 @@ fn finish_run(inner: &Arc<SchedulerInner>, run_id: RunId, mut summary: ResultSum
             Ok(state) => state,
             Err(_) => return,
         };
-        let managed = match state.runs.get_mut(&run_id) {
-            Some(managed) => managed,
-            None => return,
+        let (state_event, completed_event, terminal_record, checkpoint) = {
+            let managed = match state.runs.get_mut(&run_id) {
+                Some(managed) => managed,
+                None => return,
+            };
+            if managed.record.state == RunState::Stopping || managed.control.is_stopped() {
+                summary = stopped_summary();
+            }
+            let terminal = outcome_state(summary.outcome);
+            if let Err(error) = validate_transition(managed.record.state, terminal) {
+                state.background_error = Some(error.to_string());
+                state.active_slots = state.active_slots.saturating_sub(1);
+                inner.wake.notify_all();
+                return;
+            }
+            managed.record.state = terminal;
+            managed.record.finished_at = Some(inner.ports.clock.now());
+            managed.record.summary = Some(summary.clone());
+            let state_event = next_event(
+                managed,
+                inner.ports.clock.now(),
+                RunEventKind::StateChanged { state: terminal },
+            );
+            let completed_event = next_event(
+                managed,
+                inner.ports.clock.now(),
+                RunEventKind::Completed {
+                    summary: summary.clone(),
+                },
+            );
+            let mut checkpoint = matches!(
+                summary.outcome,
+                RunOutcome::Succeeded | RunOutcome::SucceededWithWarnings
+            )
+            .then(|| managed.checkpoint.clone())
+            .flatten();
+            if let Some(checkpoint) = &mut checkpoint {
+                checkpoint.completed_at = managed
+                    .record
+                    .finished_at
+                    .expect("terminal record has finished_at");
+            }
+            (
+                state_event,
+                completed_event,
+                managed.record.clone(),
+                checkpoint,
+            )
         };
-        if managed.record.state == RunState::Stopping || managed.control.is_stopped() {
-            summary = stopped_summary();
-        }
-        let terminal = outcome_state(summary.outcome);
-        if let Err(error) = validate_transition(managed.record.state, terminal) {
-            state.background_error = Some(error.to_string());
-            state.active_slots = state.active_slots.saturating_sub(1);
-            inner.wake.notify_all();
-            return;
-        }
-        managed.record.state = terminal;
-        managed.record.finished_at = Some(inner.ports.clock.now());
-        managed.record.summary = Some(summary.clone());
-        let state_event = next_event(
-            managed,
-            inner.ports.clock.now(),
-            RunEventKind::StateChanged { state: terminal },
-        );
-        let completed_event = next_event(
-            managed,
-            inner.ports.clock.now(),
-            RunEventKind::Completed { summary },
-        );
-        if let Err(error) = inner.ports.history.update(&managed.record) {
-            state.background_error = Some(error.to_string());
-        }
+        let commit = TerminalRunCommit {
+            run: terminal_record,
+            checkpoint,
+        };
+        let persisted = match inner.ports.history.commit_terminal_run(&commit) {
+            Ok(()) => true,
+            Err(error) => {
+                state.persistence_error = Some(error.to_string());
+                state.pending_terminal_updates.push_back(commit);
+                false
+            }
+        };
         state.active_slots = state.active_slots.saturating_sub(1);
         if state.runs.values().all(|run| is_terminal(run.record.state)) {
             state.globally_paused = false;
         }
         inner.wake.notify_all();
-        (state_event, completed_event)
+        (state_event, completed_event, persisted)
     };
     inner.publish_event(completed.0);
     inner.publish_event(completed.1);
+    if completed.2
+        && let Ok(mut state) = inner.state.lock()
+    {
+        state.runs.remove(&run_id);
+    }
 }
 
 struct SchedulerReporter {
@@ -682,6 +891,17 @@ impl RunReporter for SchedulerReporter {
             self.inner.store_background_error(error.to_string());
         }
     }
+
+    fn checkpoint(&self, checkpoint: crate::ActionCheckpoint) {
+        if let Ok(mut state) = self.inner.state.lock()
+            && let Some(run) = state.runs.get_mut(&self.run_id)
+            && checkpoint.run_id == run.record.run_id
+            && checkpoint.folder_id == run.record.folder_id
+            && checkpoint.action_id == run.record.action_id
+        {
+            run.checkpoint = Some(checkpoint);
+        }
+    }
 }
 
 #[must_use]
@@ -693,6 +913,7 @@ pub const fn is_terminal(state: RunState) -> bool {
             | RunState::Failed
             | RunState::Stopped
             | RunState::Interrupted
+            | RunState::Skipped
     )
 }
 
@@ -717,6 +938,7 @@ pub fn validate_transition(from: RunState, to: RunState) -> Result<(), Scheduler
                     | RunState::Failed
                     | RunState::Stopped
                     | RunState::Interrupted
+                    | RunState::Skipped
             )
             | (
                 RunState::Paused,
@@ -727,10 +949,11 @@ pub fn validate_transition(from: RunState, to: RunState) -> Result<(), Scheduler
                     | RunState::Failed
                     | RunState::Stopped
                     | RunState::Interrupted
+                    | RunState::Skipped
             )
             | (
                 RunState::Stopping,
-                RunState::Stopped | RunState::Failed | RunState::Interrupted
+                RunState::Stopped | RunState::Failed | RunState::Interrupted | RunState::Skipped
             )
     );
     if valid {
@@ -762,6 +985,7 @@ fn outcome_state(outcome: RunOutcome) -> RunState {
         RunOutcome::Failed => RunState::Failed,
         RunOutcome::Stopped => RunState::Stopped,
         RunOutcome::Interrupted => RunState::Interrupted,
+        RunOutcome::Skipped => RunState::Skipped,
     }
 }
 
@@ -775,6 +999,27 @@ fn stopped_summary() -> ResultSummary {
         artifact: None,
         warnings: Vec::new(),
         error: None,
+        skip_reason: None,
+    }
+}
+
+fn internal_failure_summary(message: String) -> ResultSummary {
+    ResultSummary {
+        outcome: RunOutcome::Failed,
+        included_entries: 0,
+        skipped_entries: 0,
+        source_bytes: 0,
+        duration_ms: 0,
+        artifact: None,
+        warnings: Vec::new(),
+        error: Some(FoldryError {
+            code: crate::ErrorCode::Internal,
+            message,
+            retryable: false,
+            path: None,
+            extensions: Extensions::new(),
+        }),
+        skip_reason: None,
     }
 }
 

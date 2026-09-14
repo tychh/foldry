@@ -7,12 +7,12 @@ Foldry 0.1.2 is distributed as a desktop application.
 Open [GitHub Releases](https://github.com/tychh/foldry/releases), choose version
 0.1.2 or newer, and download the package for your platform:
 
-| Platform            | Desktop package             |
-| ------------------- | --------------------------- |
-| Windows x64         | NSIS installer or MSI       |
-| macOS Intel         | x64 DMG with `Foldry.app`   |
-| macOS Apple Silicon | ARM64 DMG with `Foldry.app` |
-| Linux x64           | AppImage or Debian package  |
+| Platform            | Desktop package                  |
+| ------------------- | -------------------------------- |
+| Windows x64         | NSIS installer or MSI            |
+| macOS Intel         | x64 DMG with `Foldry.app`        |
+| macOS Apple Silicon | ARM64 DMG with `Foldry.app`      |
+| Linux x64           | AppImage, Debian package, or RPM |
 
 The initial release candidates may be unsigned. Verify the release checksum when
 one is provided and read the release notes before bypassing an operating-system
@@ -89,6 +89,9 @@ notarization. An ad-hoc build is suitable for local development.
 2. Select **Add folders**.
 3. Pick a folder in Locations, Favorites, Recent, Tree, or List.
 4. Keep **Default** as the Ignore Profile for a minimal first run.
+   For software projects, **Development Project** can instead keep only
+   Git-ignored candidates and remove safe cross-language runtime, build, test,
+   IDE, VCS, OS, cache, and coverage artifacts.
 5. Configure the Archive action and open **Preview**.
 6. Review excluded entries and run the action.
 

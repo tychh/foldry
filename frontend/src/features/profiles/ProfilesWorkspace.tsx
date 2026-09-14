@@ -45,11 +45,11 @@ import { finishSave, reconcileExternalText } from "./profileDraft";
 import {
   changedLines,
   insertPreset,
-  parsePresetDefinition,
   type PresetDefinition,
   type PresetInstallationState,
   presetState,
   removePreset,
+  resolvePresetDefinitions,
   updatePreset,
 } from "./profilePresets";
 import classes from "./ProfilesWorkspace.module.css";
@@ -104,7 +104,7 @@ export function ProfilesWorkspace({
   const saveRef = useRef<() => Promise<boolean>>(async () => true);
 
   const presets = useMemo(
-    () => snapshot.presets.map(parsePresetDefinition),
+    () => resolvePresetDefinitions(snapshot.presets),
     [snapshot.presets],
   );
   const selectedUsageCount = selected?.id
@@ -496,6 +496,7 @@ export function ProfilesWorkspace({
             >
               <ProfileCodeEditor
                 diagnostics={diagnostics}
+                label={t("profileEditorLabel")}
                 value={draft}
                 onChange={changeDraft}
               />

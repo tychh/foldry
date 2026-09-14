@@ -5,6 +5,8 @@ import type {
   FolderAction,
   Settings,
   Folder,
+  FolderOperationalSummary,
+  FolderSortMode,
 } from "../../shared/contracts/generated";
 
 export function defaultArchiveActionSpec(settings: Settings): ActionSpec {
@@ -68,4 +70,54 @@ export function archiveActions(folder: Folder): FolderAction[] {
 export function basename(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts.at(-1) ?? path;
+}
+
+export function filterFolders(folders: Folder[], search: string): Folder[] {
+  const needle = search.trim().toLocaleLowerCase();
+  if (!needle) return folders;
+  return folders.filter(
+    (folder) =>
+      basename(folder.source).toLocaleLowerCase().includes(needle) ||
+      folder.source.toLocaleLowerCase().includes(needle),
+  );
+}
+
+export function sortFolders(
+  folders: Folder[],
+  mode: FolderSortMode,
+  summaries: ReadonlyMap<string, FolderOperationalSummary>,
+): Folder[] {
+  const result = [...folders];
+  const stableName = (left: Folder, right: Folder) =>
+    basename(left.source).localeCompare(basename(right.source), undefined, {
+      sensitivity: "base",
+    }) ||
+    left.source.localeCompare(right.source) ||
+    left.id.localeCompare(right.id);
+  result.sort((left, right) => {
+    if (mode === "name_ascending") return stableName(left, right);
+    if (mode === "name_descending") return -stableName(left, right);
+    if (mode === "recently_added")
+      return (
+        right.created_at.localeCompare(left.created_at) ||
+        stableName(left, right)
+      );
+    if (mode === "oldest_added")
+      return (
+        left.created_at.localeCompare(right.created_at) ||
+        stableName(left, right)
+      );
+    const leftRun = summaries.get(left.id)?.latest_run_at ?? null;
+    const rightRun = summaries.get(right.id)?.latest_run_at ?? null;
+    if (leftRun === null && rightRun === null) return stableName(left, right);
+    if (mode === "recently_run") {
+      if (leftRun === null) return 1;
+      if (rightRun === null) return -1;
+      return rightRun.localeCompare(leftRun) || stableName(left, right);
+    }
+    if (leftRun === null) return -1;
+    if (rightRun === null) return 1;
+    return leftRun.localeCompare(rightRun) || stableName(left, right);
+  });
+  return result;
 }

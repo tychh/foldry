@@ -32,6 +32,19 @@ fn help_exposes_current_folder_action_command_groups() {
 }
 
 #[test]
+fn internal_cli_rejects_missing_directory_overrides_before_runtime_writes() {
+    let output = Command::new(binary())
+        .args(["config", "path"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(6));
+    assert!(
+        stderr(&output)
+            .contains("requires explicit --config-dir, --data-dir, and --cache-dir overrides")
+    );
+}
+
+#[test]
 fn json_mode_has_a_versioned_envelope_and_validation_exit_code() {
     let root = tempfile::tempdir().unwrap();
     let output = run(root.path(), &["--json", "config", "path"]);
@@ -225,6 +238,36 @@ fn one_shot_archive_does_not_create_a_remembered_folder() {
     let folders = run(root.path(), &["--json", "folder", "list"]);
     let json: Value = serde_json::from_slice(&folders.stdout).unwrap();
     assert_eq!(json["data"], serde_json::json!([]));
+}
+
+#[test]
+fn one_shot_archive_supports_embedded_seven_zip() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("seven-source");
+    let output = root.path().join("seven-output");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&output).unwrap();
+    fs::write(source.join("unicode-данные.txt"), "content").unwrap();
+
+    let archived = run(
+        root.path(),
+        &[
+            "archive",
+            source.to_str().unwrap(),
+            "--profile",
+            "Default",
+            "--output",
+            output.to_str().unwrap(),
+            "--name",
+            "embedded",
+            "--format",
+            "7z",
+            "--full-verify",
+        ],
+    );
+
+    assert!(archived.status.success(), "{}", stderr(&archived));
+    assert!(output.join("embedded.7z").is_file());
 }
 
 #[cfg(unix)]

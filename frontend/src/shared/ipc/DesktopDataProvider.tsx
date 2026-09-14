@@ -13,11 +13,15 @@ import {
 
 import type {
   BootstrapSnapshot,
+  ChangeAssessmentProgress,
+  ChangeAssessmentResult,
+  FolderOperationalSummary,
   IpcError,
   ProgressSnapshot,
   RunEvent,
   RunOutcome,
   RunRecord,
+  SchedulerSnapshot,
   RunState,
 } from "../contracts/generated";
 import {
@@ -38,8 +42,12 @@ type DesktopDataContextValue = {
   error: IpcError | null;
   preview: boolean;
   progressByRun: ReadonlyMap<string, ProgressSnapshot>;
+  queuePositionByRun: ReadonlyMap<string, number>;
+  changeAssessmentProgress: ChangeAssessmentProgress | null;
   sessionStartedAt: number;
   reload: () => Promise<void>;
+  recheckChanged: () => Promise<ChangeAssessmentResult | undefined>;
+  cancelRecheckChanged: () => Promise<boolean | undefined>;
   query: <T>(name: DesktopCommand, args?: DesktopCommandArgs) => Promise<T>;
   command: <T>(
     name: DesktopCommand,
@@ -55,6 +63,33 @@ type VersionedRunEvent = {
 };
 
 const RUN_RECONCILIATION_INTERVAL_MS = 1_000;
+const CHANGE_RECHECK_COMMANDS = new Set<DesktopCommand>([
+  "save_plan",
+  "add_folder",
+  "update_folder",
+  "locate_folder",
+  "unlist_folder",
+  "forget_folders",
+  "forget_all_unlisted_folders",
+  "add_action",
+  "update_action",
+  "remove_action",
+  "reorder_actions",
+  "save_profile",
+  "delete_profile",
+  "restore_default_profile",
+]);
+
+function shouldRecheckAfterCommand(name: DesktopCommand): boolean {
+  return CHANGE_RECHECK_COMMANDS.has(name);
+}
+
+export function isCurrentAssessmentGeneration(
+  current: string | null,
+  candidate: string,
+): boolean {
+  return current === null || BigInt(candidate) >= BigInt(current);
+}
 
 export function DesktopDataProvider({ children }: PropsWithChildren) {
   const [client] = useState<DesktopClient>(createDesktopClient);
@@ -65,7 +100,13 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
   const [progressByRun, setProgressByRun] = useState<
     ReadonlyMap<string, ProgressSnapshot>
   >(() => new Map());
+  const [queuePositionByRun, setQueuePositionByRun] = useState<
+    ReadonlyMap<string, number>
+  >(() => new Map());
+  const [changeAssessmentProgress, setChangeAssessmentProgress] =
+    useState<ChangeAssessmentProgress | null>(null);
   const runEventRevisionRef = useRef(new Map<string, VersionedRunEvent>());
+  const changeAssessmentGenerationRef = useRef(0n);
 
   const applyEvent = useCallback((event: RunEvent) => {
     if (
@@ -90,10 +131,63 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
         return next;
       });
     }
+    if (
+      event.event.type === "completed" ||
+      (event.event.type === "state_changed" &&
+        isTerminalRunState(event.event.state))
+    ) {
+      setProgressByRun((current) => {
+        if (!current.has(event.run_id)) return current;
+        const next = new Map(current);
+        next.delete(event.run_id);
+        return next;
+      });
+    }
     setSnapshot((current) =>
       current ? applyRunEvent(current, event) : current,
     );
   }, []);
+
+  const replaceFolderSummaries = useCallback(
+    (summaries: FolderOperationalSummary[]) => {
+      setSnapshot((current) =>
+        current ? { ...current, folder_summaries: summaries } : current,
+      );
+    },
+    [],
+  );
+
+  const recheckChanged = useCallback(async () => {
+    try {
+      const result =
+        await client.command<ChangeAssessmentResult>("recheck_changed");
+      if (
+        isCurrentAssessmentGeneration(
+          changeAssessmentGenerationRef.current.toString(),
+          result.generation,
+        )
+      ) {
+        changeAssessmentGenerationRef.current = BigInt(result.generation);
+        replaceFolderSummaries(result.summaries);
+      }
+      setError(null);
+      return result;
+    } catch (caught) {
+      setError(normalizeIpcError(caught));
+      return undefined;
+    }
+  }, [client, replaceFolderSummaries]);
+
+  const cancelRecheckChanged = useCallback(async () => {
+    try {
+      const cancelled = await client.command<boolean>("cancel_recheck_changed");
+      setError(null);
+      return cancelled;
+    } catch (caught) {
+      setError(normalizeIpcError(caught));
+      return undefined;
+    }
+  }, [client]);
 
   const reload = useCallback(async () => {
     const revisionsAtStart = runEventRevisions(runEventRevisionRef.current);
@@ -102,6 +196,7 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
     );
     try {
       const next = await client.bootstrap();
+      setQueuePositionByRun(inferQueuePositions(next.active_runs));
       setSnapshot(() =>
         reconcileBootstrapAfterRunEvents(
           next,
@@ -124,6 +219,7 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
     void client.bootstrap().then(
       (next) => {
         if (active) {
+          setQueuePositionByRun(inferQueuePositions(next.active_runs));
           setSnapshot(() =>
             reconcileBootstrapAfterRunEvents(
               next,
@@ -132,6 +228,7 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
           );
           setError(null);
           setConnection("connected");
+          void recheckChanged();
         }
       },
       (caught: unknown) => {
@@ -145,6 +242,9 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
       .listenRunEvents((event) => {
         if (active) {
           applyEvent(event);
+          if (event.event.type === "completed") {
+            void reload().then(recheckChanged);
+          }
         }
       })
       .then((unlisten) => {
@@ -157,7 +257,7 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
 
     const handleVisibility = () => {
       if (document.visibilityState === "visible" && client.preview === false) {
-        void reload();
+        void reload().then(recheckChanged);
       }
     };
     document.addEventListener("visibilitychange", handleVisibility);
@@ -166,7 +266,42 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
       dispose?.();
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [applyEvent, client, reload]);
+  }, [applyEvent, client, recheckChanged, reload]);
+
+  useEffect(() => {
+    let active = true;
+    let dispose: (() => void) | undefined;
+    void client
+      .listenChangeAssessmentEvents((event) => {
+        if (active) {
+          if (
+            !isCurrentAssessmentGeneration(
+              changeAssessmentGenerationRef.current.toString(),
+              event.generation,
+            )
+          ) {
+            return;
+          }
+          changeAssessmentGenerationRef.current = BigInt(event.generation);
+          setChangeAssessmentProgress((current) =>
+            isCurrentAssessmentGeneration(
+              current?.generation ?? null,
+              event.generation,
+            )
+              ? event
+              : current,
+          );
+        }
+      })
+      .then((unlisten) => {
+        if (active) dispose = unlisten;
+        else unlisten();
+      });
+    return () => {
+      active = false;
+      dispose?.();
+    };
+  }, [client]);
 
   const hasNonTerminalRuns =
     snapshot?.active_runs.some((run) => !isTerminalRunState(run.state)) ??
@@ -182,9 +317,31 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
       refreshing = true;
       const revisionsAtStart = runEventRevisions(runEventRevisionRef.current);
       try {
-        const runs = await client.command<RunRecord[]>("scheduler_snapshot");
+        const scheduler =
+          await client.command<SchedulerSnapshot>("scheduler_snapshot");
+        const runs = scheduler.runs.map((scheduled) => scheduled.record);
         if (!active) return;
+        setQueuePositionByRun(
+          new Map(
+            scheduler.runs.flatMap((scheduled) =>
+              scheduled.queue_position === null
+                ? []
+                : [[scheduled.record.run_id, Number(scheduled.queue_position)]],
+            ),
+          ),
+        );
         setError(null);
+        const activeRunIds = new Set(
+          runs
+            .filter((run) => !isTerminalRunState(run.state))
+            .map((run) => run.run_id),
+        );
+        setProgressByRun((current) => {
+          const next = new Map(
+            [...current].filter(([runId]) => activeRunIds.has(runId)),
+          );
+          return next.size === current.size ? current : next;
+        });
         setSnapshot((current) =>
           current
             ? reconcileSchedulerSnapshot(
@@ -222,13 +379,14 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
         const result = await client.command<T>(name, args);
         setError(null);
         await reload();
+        if (shouldRecheckAfterCommand(name)) void recheckChanged();
         return result;
       } catch (caught) {
         setError(normalizeIpcError(caught));
         return undefined;
       }
     },
-    [client, reload],
+    [client, recheckChanged, reload],
   );
 
   const query = useCallback(
@@ -253,19 +411,27 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
       error,
       preview: client.preview,
       progressByRun,
+      queuePositionByRun,
+      changeAssessmentProgress,
       sessionStartedAt,
       reload,
+      recheckChanged,
+      cancelRecheckChanged,
       query,
       command,
     }),
     [
       client.preview,
+      cancelRecheckChanged,
+      changeAssessmentProgress,
       command,
       connection,
       error,
       progressByRun,
+      queuePositionByRun,
       query,
       reload,
+      recheckChanged,
       sessionStartedAt,
       snapshot,
     ],
@@ -275,6 +441,14 @@ export function DesktopDataProvider({ children }: PropsWithChildren) {
     <DesktopDataContext.Provider value={value}>
       {children}
     </DesktopDataContext.Provider>
+  );
+}
+
+function inferQueuePositions(runs: RunRecord[]): ReadonlyMap<string, number> {
+  return new Map(
+    runs
+      .filter((run) => run.state === "queued")
+      .map((run, index) => [run.run_id, index + 1]),
   );
 }
 

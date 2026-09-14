@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
+import type {
+  Folder,
+  FolderOperationalSummary,
+} from "../../shared/contracts/generated";
 
-import { defaultArchiveActionSpec, updateArchive } from "./folderModel";
+import {
+  defaultArchiveActionSpec,
+  filterFolders,
+  sortFolders,
+  updateArchive,
+} from "./folderModel";
 
 const settings = {
   version: 1,
@@ -40,6 +49,7 @@ const settings = {
     view: "tree" as const,
     extensions: {},
   },
+  folder_sort_mode: "oldest_added" as const,
   extensions: {},
 };
 
@@ -60,6 +70,7 @@ describe("folder model helpers", () => {
     const folder = {
       id: "folder",
       source: "/source",
+      created_at: "2026-01-01T00:00:00Z",
       listed: true,
       enabled: true,
       default_profile_id: "profile",
@@ -82,4 +93,79 @@ describe("folder model helpers", () => {
     expect(folder.actions[0]?.spec.archive?.include_root).toBe(true);
     expect(updated.actions[0]?.spec.archive?.include_root).toBe(false);
   });
+
+  it("filters basename and full path case-insensitively", () => {
+    const folders = [folder("a", "/Users/ME/Проект", "2026-01-01T00:00:00Z")];
+
+    expect(filterFolders(folders, "пРоЕкТ")).toHaveLength(1);
+    expect(filterFolders(folders, "users/me")).toHaveLength(1);
+    expect(filterFolders(folders, "missing")).toEqual([]);
+  });
+
+  it("sorts all modes with stable ties and consistent never-run placement", () => {
+    const old = folder("b", "/zeta/Same", "2025-01-01T00:00:00Z");
+    const recent = folder("a", "/alpha/Same", "2026-01-01T00:00:00Z");
+    const never = folder("c", "/never", "2024-01-01T00:00:00Z");
+    const summaries = new Map([
+      [old.id, summary(old.id, "2026-01-01T00:00:00Z")],
+      [recent.id, summary(recent.id, "2026-02-01T00:00:00Z")],
+      [never.id, summary(never.id, null)],
+    ]);
+
+    expect(
+      sortFolders([old, recent], "name_ascending", summaries).map(
+        (item) => item.id,
+      ),
+    ).toEqual(["a", "b"]);
+    expect(
+      sortFolders([old, recent], "name_descending", summaries).map(
+        (item) => item.id,
+      ),
+    ).toEqual(["b", "a"]);
+    expect(sortFolders([old, recent], "recently_added", summaries)[0]?.id).toBe(
+      "a",
+    );
+    expect(sortFolders([old, recent], "oldest_added", summaries)[0]?.id).toBe(
+      "b",
+    );
+    expect(
+      sortFolders([never, old, recent], "recently_run", summaries).map(
+        (item) => item.id,
+      ),
+    ).toEqual(["a", "b", "c"]);
+    expect(
+      sortFolders([old, recent, never], "least_recently_run", summaries).map(
+        (item) => item.id,
+      ),
+    ).toEqual(["c", "b", "a"]);
+  });
 });
+
+function folder(id: string, source: string, createdAt: string): Folder {
+  return {
+    id,
+    source,
+    created_at: createdAt,
+    listed: true,
+    enabled: true,
+    default_profile_id: "profile",
+    actions: [],
+    extensions: {},
+  };
+}
+
+function summary(
+  folderId: string,
+  latestRunAt: string | null,
+): FolderOperationalSummary {
+  return {
+    folder_id: folderId,
+    availability: "available",
+    availability_diagnostic: null,
+    latest_outcome: latestRunAt ? "succeeded" : null,
+    latest_run_at: latestRunAt,
+    last_successful_artifact: null,
+    artifact_available: false,
+    change_state: "unchanged",
+  };
+}

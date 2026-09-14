@@ -6,12 +6,12 @@ release validation.
 
 ## Current release targets
 
-| Platform | Architecture        | Desktop artifacts           |
-| -------- | ------------------- | --------------------------- |
-| Windows  | x86-64              | MSI and NSIS                |
-| macOS    | Intel x86-64        | `.app` and DMG              |
-| macOS    | Apple Silicon ARM64 | `.app` and DMG              |
-| Linux    | x86-64              | Debian package and AppImage |
+| Platform | Architecture        | Desktop artifacts                 |
+| -------- | ------------------- | --------------------------------- |
+| Windows  | x86-64              | MSI and NSIS                      |
+| macOS    | Intel x86-64        | `.app` and DMG                    |
+| macOS    | Apple Silicon ARM64 | `.app` and DMG                    |
+| Linux    | x86-64              | Debian package, RPM, and AppImage |
 
 The minimum native window is 1024×700. The configured Intel macOS minimum is
 10.15; Apple Silicon requires macOS 11 or newer.
@@ -20,22 +20,29 @@ ARM Linux is not a release target in 0.1.2.
 
 ## Automated checks
 
-GitHub Actions runs the complete quality gate and native package build on:
+Pull requests run the complete quality gate on Ubuntu. Every push to `main`
+automatically builds the complete native package matrix. Other branches can
+request the same build, or one selected platform, through the manually dispatched
+**Build artifacts** workflow. A pushed `v*` tag rebuilds all targets and publishes
+a public GitHub Release.
 
-- Ubuntu 24.04 x64;
+The native matrix uses:
+
+- Ubuntu 22.04 x64;
 - Windows Server 2025 x64;
 - macOS 15 Intel;
 - macOS 15 Apple Silicon.
 
 The gate covers formatting, lint, generated contracts, TypeScript, frontend tests,
-Rust tests, workspace builds, and Tauri packaging.
+Rust tests, workspace builds, and Tauri packaging. Only the tag-triggered Release
+workflow has permission to publish repository contents.
 
 ## Manual release checks
 
 Before publishing a platform artifact, verify on a disposable source/output tree:
 
 - launch, folder picker, drag and drop, Favorites, Recent, Tree, and List;
-- ZIP, TAR.GZ, and TAR.ZST creation and independent extraction;
+- ZIP, TAR.GZ, TAR.ZST, and 7z creation and independent extraction;
 - overwrite, skip, increment, full verification, and checksum;
 - pause, resume, stop, restart recovery, history, and logs;
 - permission-denied and read-only destinations;

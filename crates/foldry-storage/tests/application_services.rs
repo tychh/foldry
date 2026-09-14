@@ -93,6 +93,39 @@ fn relist_reuses_folder_and_deleted_archive_is_not_recreated() {
 }
 
 #[test]
+fn missing_folder_survives_updates_and_locate_preserves_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let service = build_service(&directories(root.path()));
+    let source = create_source(root.path(), "moving-source");
+    let folder = service.add_folder(source.clone(), None).unwrap();
+    fs::remove_dir(&source).unwrap();
+
+    let mut updated = folder.clone();
+    updated.enabled = false;
+    service.update_folder(updated).unwrap();
+    assert!(matches!(
+        service.prepare_run_current(folder.id, folder.actions[0].id),
+        Err(UseCaseError::SourceUnavailable(_))
+    ));
+
+    let replacement = create_source(root.path(), "replacement");
+    let located = service
+        .locate_folder(folder.id, replacement.clone())
+        .unwrap();
+    assert_eq!(located.id, folder.id);
+    assert_eq!(located.created_at, folder.created_at);
+    assert_eq!(located.actions, folder.actions);
+    assert_eq!(located.source, fs::canonicalize(replacement).unwrap());
+
+    let mut bypass = located.clone();
+    bypass.source = create_source(root.path(), "bypass");
+    assert!(matches!(
+        service.update_folder(bypass),
+        Err(UseCaseError::Conflict(message)) if message == "source_change_requires_locate"
+    ));
+}
+
+#[test]
 fn action_crud_allows_multiple_types_and_preserves_explicit_order() {
     let root = tempfile::tempdir().unwrap();
     let service = build_service(&directories(root.path()));

@@ -1,6 +1,25 @@
 # Ignore Profiles
 
 Ignore Profiles decide which source entries participate in Preview and Actions.
+
+## Development Project and `.gitignore`
+
+Profile format v2 supports exactly this dynamic directive:
+
+```text
+# @rule-source gitignore mode=exclude-unignored nested=true
+```
+
+It deliberately inverts Git selection: paths Git does not ignore are excluded by
+Foldry, while Git-ignored paths remain candidates. Static `.packignore` rules can
+then exclude disposable output for Python, Node.js, Rust, Go, Java, .NET, PHP,
+Ruby, C/C++, CMake and common web frameworks, together with IDE, VCS, OS,
+build, test, cache, and coverage artifacts. Sensitive presets remain opt-in.
+Root and nested `.gitignore` files support comments, escaping, anchored and
+directory patterns, and negation through the same Git-compatible matcher. Global
+excludes, `.git/info/exclude`, and the `git` executable are not consulted. If no
+`.gitignore` exists, ordinary paths are excluded. A queued Run stores the resolved
+rule files and hash, so later edits cannot change that Run.
 They are UTF-8 `.packignore` files with Git-style matching, stable Foldry metadata,
 and optional preset blocks.
 

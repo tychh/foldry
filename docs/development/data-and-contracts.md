@@ -77,7 +77,15 @@ references resolve to Default before an operation proceeds.
 
 ## SQLite
 
-`app.db` stores schema version, Runs, terminal summaries, and paged logs.
+`app.db` schema v3 stores Runs, terminal summaries, paged logs, registered output
+directories, per-action operational state, and successful action checkpoints.
+Checkpoint and last-successful artifact rows survive detailed Run retention.
+
+Plan v3 adds stable Folder creation timestamps; v2 migration assigns deterministic
+sentinels in the original order. Settings v2 persists all six Folder sort modes.
+Profile v2 adds immutable resolved dynamic rule sources. Rust remains authoritative
+and generated TypeScript DTOs expose typed skipped outcomes, availability/change
+summaries, and scheduler queue positions.
 Migrations are contiguous and transactional. Startup fails rather than skipping an
 unknown migration.
 

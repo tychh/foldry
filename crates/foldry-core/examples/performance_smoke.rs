@@ -63,6 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ArchiveFormat::Zip,
         ArchiveFormat::TarGz,
         ArchiveFormat::TarZst,
+        ArchiveFormat::SevenZip,
     ] {
         let path = archive_directory.path().join(format_name(format));
         let started = Instant::now();
@@ -135,6 +136,9 @@ fn synthetic_entry(size: u64) -> ScannedEntry {
         disposition: ScanDisposition::Included,
         size,
         modified_unix_nanos: None,
+        created_unix_nanos: None,
+        unix_mode: None,
+        windows_attributes: None,
         link_target: None,
         is_mount_point: false,
         is_network_mount: false,
@@ -182,6 +186,7 @@ const fn format_name(format: ArchiveFormat) -> &'static str {
         ArchiveFormat::Zip => "zip",
         ArchiveFormat::TarGz => "tar_gz",
         ArchiveFormat::TarZst => "tar_zst",
+        ArchiveFormat::SevenZip => "7z",
     }
 }
 

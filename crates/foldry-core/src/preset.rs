@@ -147,6 +147,9 @@ impl PresetCatalog {
         }
 
         let mut edited = profile_text.replace("\r\n", "\n");
+        if definition.content.contains("# @rule-source ") {
+            edited = edited.replace("# @profile-version 1", "# @profile-version 2");
+        }
         if !edited.ends_with('\n') {
             edited.push('\n');
         }
@@ -216,6 +219,9 @@ impl PresetCatalog {
         edited.push_str(&profile_text[..block.start]);
         edited.push_str(&replacement);
         edited.push_str(&profile_text[block.end..]);
+        if definition.content.contains("# @rule-source ") {
+            edited = edited.replace("# @profile-version 1", "# @profile-version 2");
+        }
         Ok(edited)
     }
 }

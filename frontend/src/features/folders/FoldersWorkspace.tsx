@@ -8,23 +8,30 @@ import {
   Drawer,
   Group,
   Modal,
+  Menu,
   Paper,
   Progress,
   ScrollArea,
+  Select,
   Stack,
   Text,
+  TextInput,
   Title,
   Tooltip,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
   ClockCounterClockwise,
+  ArrowsClockwise,
+  DotsThree,
   Eye,
   FolderOpen,
   FolderSimple,
+  ListBullets,
   Pause,
   Play,
   Plus,
+  MagnifyingGlass,
   Stop,
   Trash,
   WarningCircle,
@@ -43,7 +50,10 @@ import type {
   BrowserView,
   Folder,
   FolderAddResult,
+  FolderOperationalSummary,
+  FolderSortMode,
   ProgressSnapshot,
+  RunChangedResult,
   RunRecord,
 } from "../../shared/contracts/generated";
 import { useI18n } from "../../shared/i18n/I18nProvider";
@@ -52,7 +62,7 @@ import { isTerminalRunState } from "../../shared/runs/runState";
 import { RunStatus } from "../../shared/ui/RunStatus";
 import { FolderBrowser } from "./FolderBrowser";
 import { FolderInspector } from "./FolderInspector";
-import { basename } from "./folderModel";
+import { basename, filterFolders, sortFolders } from "./folderModel";
 import { folderResultExpiresAt, resolveFolderStatus } from "./folderStatus";
 import { runStateSummary, type RunStateSummary } from "./runQueue";
 import classes from "./FoldersWorkspace.module.css";
@@ -67,14 +77,21 @@ const RunExplorer = lazy(() =>
 
 export function FoldersWorkspace({ snapshot }: FoldersWorkspaceProps) {
   const { t } = useI18n();
-  const { command, preview, progressByRun, query, reload, sessionStartedAt } =
-    useDesktopData();
-  const listedFolders = useMemo(
+  const {
+    command,
+    preview,
+    progressByRun,
+    queuePositionByRun,
+    query,
+    reload,
+    sessionStartedAt,
+  } = useDesktopData();
+  const allListedFolders = useMemo(
     () => snapshot.plan.folders.filter((folder) => folder.listed),
     [snapshot.plan.folders],
   );
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(
-    listedFolders[0]?.id ?? null,
+    allListedFolders[0]?.id ?? null,
   );
   const [duplicateFolderId, setDuplicateFolderId] = useState<string | null>(
     null,
@@ -102,6 +119,31 @@ export function FoldersWorkspace({ snapshot }: FoldersWorkspaceProps) {
     snapshot.settings.browser.view,
   );
   const [globalPauseRequested, setGlobalPauseRequested] = useState(false);
+  const [search, setSearch] = useState("");
+  const [sortMode, setSortMode] = useState<FolderSortMode>(
+    snapshot.settings.folder_sort_mode,
+  );
+  const [runChangedResult, setRunChangedResult] =
+    useState<RunChangedResult | null>(null);
+  const summaryByFolder = useMemo(
+    () =>
+      new Map(
+        snapshot.folder_summaries.map((summary) => [
+          summary.folder_id,
+          summary,
+        ]),
+      ),
+    [snapshot.folder_summaries],
+  );
+  const listedFolders = useMemo(
+    () =>
+      sortFolders(
+        filterFolders(allListedFolders, search),
+        sortMode,
+        summaryByFolder,
+      ),
+    [allListedFolders, search, sortMode, summaryByFolder],
+  );
 
   const updateBrowserView = useCallback(
     (next: BrowserView) => {
@@ -114,8 +156,18 @@ export function FoldersWorkspace({ snapshot }: FoldersWorkspaceProps) {
     [browserView, query],
   );
 
+  const updateSortMode = useCallback(
+    (next: FolderSortMode) => {
+      setSortMode(next);
+      void command("save_settings", {
+        settings: { ...snapshot.settings, folder_sort_mode: next },
+      });
+    },
+    [command, snapshot.settings],
+  );
+
   const selectedFolder =
-    listedFolders.find((folder) => folder.id === selectedFolderId) ?? null;
+    allListedFolders.find((folder) => folder.id === selectedFolderId) ?? null;
   const nonTerminalRuns = snapshot.active_runs.filter(
     (run) => !isTerminalRunState(run.state),
   );
@@ -134,11 +186,13 @@ export function FoldersWorkspace({ snapshot }: FoldersWorkspaceProps) {
   useEffect(() => {
     if (
       selectedFolderId &&
-      !listedFolders.some((folder) => folder.id === selectedFolderId)
+      !allListedFolders.some((folder) => folder.id === selectedFolderId)
     ) {
-      queueMicrotask(() => setSelectedFolderId(listedFolders[0]?.id ?? null));
+      queueMicrotask(() =>
+        setSelectedFolderId(allListedFolders[0]?.id ?? null),
+      );
     }
-  }, [listedFolders, selectedFolderId]);
+  }, [allListedFolders, selectedFolderId]);
 
   const addPaths = useCallback(
     async (paths: string[]) => {
@@ -198,11 +252,6 @@ export function FoldersWorkspace({ snapshot }: FoldersWorkspaceProps) {
     nonTerminalRuns.some((run) => run.state === "paused");
   const hasStopping = nonTerminalRuns.some((run) => run.state === "stopping");
   const hasStoppable = nonTerminalRuns.some((run) => run.state !== "stopping");
-  const queuePositionByRun = new Map(
-    nonTerminalRuns
-      .filter((run) => run.state === "queued")
-      .map((run, index) => [run.run_id, index + 1]),
-  );
 
   useEffect(() => {
     if (nonTerminalRuns.length === 0 && globalPauseRequested) {
@@ -239,7 +288,35 @@ export function FoldersWorkspace({ snapshot }: FoldersWorkspaceProps) {
             </Alert>
           ) : null}
 
-          {listedFolders.length ? (
+          <Group gap="xs" grow wrap="nowrap">
+            <TextInput
+              aria-label={t("searchFolders")}
+              leftSection={<MagnifyingGlass aria-hidden size={15} />}
+              placeholder={t("searchFolders")}
+              value={search}
+              onChange={(event) => setSearch(event.currentTarget.value)}
+            />
+            <Select
+              aria-label={t("sortFolders")}
+              data={[
+                { label: t("sortNameAscending"), value: "name_ascending" },
+                { label: t("sortNameDescending"), value: "name_descending" },
+                { label: t("sortRecentlyAdded"), value: "recently_added" },
+                { label: t("sortOldestAdded"), value: "oldest_added" },
+                { label: t("sortRecentlyRun"), value: "recently_run" },
+                {
+                  label: t("sortLeastRecentlyRun"),
+                  value: "least_recently_run",
+                },
+              ]}
+              value={sortMode}
+              onChange={(value) =>
+                value && updateSortMode(value as FolderSortMode)
+              }
+            />
+          </Group>
+
+          {allListedFolders.length > 0 && listedFolders.length > 0 ? (
             <ScrollArea className={classes.folderScroll} offsetScrollbars>
               <Stack gap="md" pr="sm">
                 {listedFolders.map((folder) => (
@@ -250,6 +327,7 @@ export function FoldersWorkspace({ snapshot }: FoldersWorkspaceProps) {
                       (run) => run.folder_id === folder.id,
                     )}
                     latestRun={latestByFolder.get(folder.id)}
+                    summary={summaryByFolder.get(folder.id)}
                     profileName={
                       snapshot.profiles.find(
                         (profile) => profile.id === folder.default_profile_id,
@@ -271,6 +349,29 @@ export function FoldersWorkspace({ snapshot }: FoldersWorkspaceProps) {
                         actionId: null,
                       })
                     }
+                    onLocate={() =>
+                      setFolderBrowser({
+                        type: "single-directory",
+                        initialPath: folder.source,
+                        sourcePath: folder.source,
+                        onConfirm: (newSource) => {
+                          void command("locate_folder", {
+                            folderId: folder.id,
+                            newSource,
+                          });
+                        },
+                      })
+                    }
+                    onOpen={() =>
+                      void command("open_source_folder", {
+                        folderId: folder.id,
+                      })
+                    }
+                    onReveal={() =>
+                      void command("reveal_last_folder_output", {
+                        folderId: folder.id,
+                      })
+                    }
                     onRemove={() => setRemoveFolder(folder)}
                     onRun={() =>
                       void command<RunRecord[]>("run_folder", {
@@ -285,6 +386,11 @@ export function FoldersWorkspace({ snapshot }: FoldersWorkspaceProps) {
                 ))}
               </Stack>
             </ScrollArea>
+          ) : allListedFolders.length ? (
+            <Paper className={classes.emptyState} withBorder>
+              <MagnifyingGlass aria-hidden size={38} />
+              <Text>{t("noFoldersMatch")}</Text>
+            </Paper>
           ) : (
             <Paper className={classes.emptyState} withBorder>
               <FolderOpen aria-hidden size={38} />
@@ -365,11 +471,11 @@ export function FoldersWorkspace({ snapshot }: FoldersWorkspaceProps) {
                     ? {
                         type: "multi-toggle-folders",
                         addedPaths: new Set(
-                          listedFolders.map((folder) => folder.source),
+                          allListedFolders.map((folder) => folder.source),
                         ),
                         onToggle: async (path, added) => {
                           if (added) {
-                            const folder = listedFolders.find(
+                            const folder = allListedFolders.find(
                               (candidate) => candidate.source === path,
                             );
                             if (folder) {
@@ -408,6 +514,9 @@ export function FoldersWorkspace({ snapshot }: FoldersWorkspaceProps) {
         hasStopping={hasStopping}
         hasStoppable={hasStoppable}
         overall={overall}
+        progressByRun={progressByRun}
+        queuePositionByRun={queuePositionByRun}
+        runs={nonTerminalRuns}
         onPauseAll={() => {
           const resume = hasPaused;
           void command<number>(resume ? "resume_all" : "pause_all").then(
@@ -419,6 +528,11 @@ export function FoldersWorkspace({ snapshot }: FoldersWorkspaceProps) {
           );
         }}
         onRunAll={() => void command("run_all_enabled")}
+        onRunChanged={() =>
+          void command<RunChangedResult>("run_changed").then((result) => {
+            if (result) setRunChangedResult(result);
+          })
+        }
         onStopAll={() =>
           void command<number>("stop_all").then((changed) => {
             if (changed !== undefined) {
@@ -427,6 +541,22 @@ export function FoldersWorkspace({ snapshot }: FoldersWorkspaceProps) {
           })
         }
       />
+
+      {runChangedResult ? (
+        <Text aria-live="polite" className={classes.batchResult} size="xs">
+          {t("runChangedResult", {
+            queued: runChangedResult.queued.toString(),
+            unchanged: runChangedResult.unchanged.toString(),
+            skipped: (
+              runChangedResult.missing +
+              runChangedResult.invalid +
+              runChangedResult.already_running +
+              runChangedResult.output_conflict_skipped
+            ).toString(),
+            conflicts: runChangedResult.output_conflict_skipped.toString(),
+          })}
+        </Text>
+      ) : null}
 
       <Modal
         centered
@@ -499,6 +629,7 @@ function FolderCard({
   activeRuns,
   profileName,
   latestRun,
+  summary,
   selected,
   sessionStartedAt,
   onSelect,
@@ -506,11 +637,15 @@ function FolderCard({
   onPreview,
   onHistory,
   onRemove,
+  onLocate,
+  onOpen,
+  onReveal,
 }: {
   folder: Folder;
   activeRuns: RunRecord[];
   profileName: string;
   latestRun?: RunRecord;
+  summary?: FolderOperationalSummary;
   selected: boolean;
   sessionStartedAt: number;
   onSelect: () => void;
@@ -518,6 +653,9 @@ function FolderCard({
   onPreview: () => void;
   onHistory: () => void;
   onRemove: () => void;
+  onLocate: () => void;
+  onOpen: () => void;
+  onReveal: () => void;
 }) {
   const { t } = useI18n();
   const enabledActions = folder.actions.filter(
@@ -545,12 +683,15 @@ function FolderCard({
     sessionStartedAt,
     statusNow,
   );
+  const missing =
+    summary?.availability !== undefined && summary.availability !== "available";
   return (
     <Paper
       aria-current={selected ? "true" : undefined}
       className={classes.folderCard}
       component="article"
       data-selected={selected || undefined}
+      data-missing={missing || undefined}
       withBorder
     >
       <button className={classes.folderSelect} type="button" onClick={onSelect}>
@@ -582,6 +723,31 @@ function FolderCard({
             value={`${enabledActions}/${folder.actions.length}`}
           />
         </Group>
+        <Text c="dimmed" pl="calc(var(--folder-label-offset))" size="xs">
+          {summary?.latest_run_at
+            ? `${t("lastRun")} ${new Date(summary.latest_run_at).toLocaleString()}`
+            : t("neverRun")}
+        </Text>
+        <Group gap={5} pl="calc(var(--folder-label-offset))">
+          {summary?.latest_outcome ? (
+            <Badge
+              color={outcomeColor(summary.latest_outcome)}
+              size="xs"
+              variant="light"
+            >
+              {t(`outcome_${summary.latest_outcome}`)}
+            </Badge>
+          ) : null}
+          {summary ? (
+            <Badge
+              color={changeColor(summary.change_state)}
+              size="xs"
+              variant="outline"
+            >
+              {t(`change_${summary.change_state}`)}
+            </Badge>
+          ) : null}
+        </Group>
       </button>
 
       <Box className={classes.folderStatus}>
@@ -590,12 +756,8 @@ function FolderCard({
 
       <Group className={classes.folderActions} gap={5} wrap="nowrap">
         <CardAction
-          icon={<Eye aria-hidden size={17} />}
-          label={t("preview")}
-          onClick={onPreview}
-        />
-        <CardAction
           disabled={
+            missing ||
             enabledActions === 0 ||
             activeRuns.some((run) => run.state === "stopping")
           }
@@ -604,16 +766,57 @@ function FolderCard({
           onClick={onRun}
         />
         <CardAction
-          icon={<ClockCounterClockwise aria-hidden size={17} />}
-          label={t("runHistory")}
-          onClick={onHistory}
-        />
-        <CardAction
           color="red"
           icon={<Trash aria-hidden size={17} />}
           label={t("removeFromFolders")}
           onClick={onRemove}
         />
+        <Menu position="bottom-end" shadow="md" width={220}>
+          <Menu.Target>
+            <ActionIcon
+              aria-label={t("moreActions")}
+              size="lg"
+              variant="default"
+            >
+              <DotsThree aria-hidden size={19} weight="bold" />
+            </ActionIcon>
+          </Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Item
+              disabled={missing}
+              leftSection={<Eye aria-hidden size={16} />}
+              onClick={onPreview}
+            >
+              {t("preview")}
+            </Menu.Item>
+            <Menu.Item
+              leftSection={<ClockCounterClockwise aria-hidden size={16} />}
+              onClick={onHistory}
+            >
+              {t("runHistory")}
+            </Menu.Item>
+            <Menu.Item
+              disabled={missing}
+              leftSection={<FolderOpen aria-hidden size={16} />}
+              onClick={onOpen}
+            >
+              {t("openSource")}
+            </Menu.Item>
+            <Menu.Item
+              disabled={!summary?.artifact_available}
+              leftSection={<FolderOpen aria-hidden size={16} />}
+              onClick={onReveal}
+            >
+              {t("revealLastArchive")}
+            </Menu.Item>
+            <Menu.Item
+              leftSection={<FolderSimple aria-hidden size={16} />}
+              onClick={onLocate}
+            >
+              {t("locateFolder")}
+            </Menu.Item>
+          </Menu.Dropdown>
+        </Menu>
       </Group>
     </Paper>
   );
@@ -784,7 +987,11 @@ function GlobalQueueBar({
   hasPaused,
   hasStopping,
   hasStoppable,
+  runs,
+  progressByRun,
+  queuePositionByRun,
   onRunAll,
+  onRunChanged,
   onPauseAll,
   onStopAll,
 }: {
@@ -793,77 +1000,261 @@ function GlobalQueueBar({
   hasPaused: boolean;
   hasStopping: boolean;
   hasStoppable: boolean;
+  runs: RunRecord[];
+  progressByRun: ReadonlyMap<string, ProgressSnapshot>;
+  queuePositionByRun: ReadonlyMap<string, number>;
   onRunAll: () => void;
+  onRunChanged: () => void;
   onPauseAll: () => void;
   onStopAll: () => void;
 }) {
   const { t } = useI18n();
+  const {
+    cancelRecheckChanged,
+    changeAssessmentProgress,
+    command,
+    recheckChanged,
+  } = useDesktopData();
+  const [activityOpened, activity] = useDisclosure(false);
+  const rechecking =
+    changeAssessmentProgress !== null && !changeAssessmentProgress.finished;
+  const active = runs.filter((run) => run.state !== "queued");
+  const waiting = runs.filter((run) => run.state === "queued");
   return (
-    <footer className={classes.commandBar}>
-      <Group gap="xs" wrap="wrap">
-        <Badge color="blue" variant="light">
-          {t("runningCount", { count: counts.running })}
-        </Badge>
-        <Badge color="gray" variant="light">
-          {t("queuedCount", { count: counts.queued })}
-        </Badge>
-        <Badge color="gray" variant="light">
-          {t("pausedCount", { count: counts.paused })}
-        </Badge>
-      </Group>
-      <Box className={classes.overallProgress}>
-        <Group justify="space-between" mb={5}>
-          <Text c="dimmed" size="xs">
-            {t("overallProgress")}
-          </Text>
-          {overall === null ? null : (
-            <Text fw={650} size="xs">
-              {overall}%
-            </Text>
-          )}
+    <>
+      <footer className={classes.commandBar}>
+        <Box className={classes.visuallyHidden}>
+          <Text>{t("runningCount", { count: counts.running })}</Text>
+          <Text>{t("queuedCount", { count: counts.queued })}</Text>
+          <Text>{t("pausedCount", { count: counts.paused })}</Text>
+          <Text>{t("overallProgress")}</Text>
+        </Box>
+        <Button
+          leftSection={<ListBullets aria-hidden size={17} />}
+          size="xs"
+          variant="subtle"
+          onClick={activity.open}
+        >
+          {t("activity")} · {active.length}/{waiting.length}
+        </Button>
+        <Box className={classes.overallProgress}>
+          <Progress.Root radius="xl" size={6}>
+            <Progress.Section
+              aria-label={t("overallProgress")}
+              animated={overall === null && counts.running > 0}
+              value={overall ?? (counts.running > 0 ? 100 : 0)}
+            />
+          </Progress.Root>
+        </Box>
+        <Group gap="xs" wrap="nowrap">
+          <Button
+            disabled={hasStopping}
+            leftSection={<Play aria-hidden size={17} weight="fill" />}
+            onClick={onRunAll}
+            size="xs"
+          >
+            {t("runAllEnabledActions")}
+          </Button>
+          <Button size="xs" variant="light" onClick={onRunChanged}>
+            {t("runChanged")}
+          </Button>
+          <Button
+            disabled={!hasStoppable || hasStopping}
+            leftSection={
+              hasPaused ? (
+                <Play aria-hidden size={17} weight="fill" />
+              ) : (
+                <Pause aria-hidden size={17} weight="fill" />
+              )
+            }
+            variant="default"
+            onClick={onPauseAll}
+            size="xs"
+          >
+            {hasPaused ? t("resumeAll") : t("pauseAll")}
+          </Button>
+          <Button
+            color="red"
+            disabled={!hasStoppable}
+            leftSection={<Stop aria-hidden size={17} weight="fill" />}
+            variant="outline"
+            onClick={onStopAll}
+            size="xs"
+          >
+            {t("stopAll")}
+          </Button>
         </Group>
-        <Progress.Root radius="xl" size={7}>
-          <Progress.Section
-            aria-label={t("overallProgress")}
-            animated={overall === null && counts.running > 0}
-            value={overall ?? (counts.running > 0 ? 100 : 0)}
-          />
-        </Progress.Root>
-      </Box>
-      <Group gap="sm" wrap="nowrap">
-        <Button
-          disabled={hasStopping}
-          leftSection={<Play aria-hidden size={17} weight="fill" />}
-          onClick={onRunAll}
-        >
-          {t("runAllEnabledActions")}
-        </Button>
-        <Button
-          disabled={!hasStoppable || hasStopping}
-          leftSection={
-            hasPaused ? (
-              <Play aria-hidden size={17} weight="fill" />
-            ) : (
-              <Pause aria-hidden size={17} weight="fill" />
-            )
-          }
-          variant="default"
-          onClick={onPauseAll}
-        >
-          {hasPaused ? t("resumeAll") : t("pauseAll")}
-        </Button>
-        <Button
-          color="red"
-          disabled={!hasStoppable}
-          leftSection={<Stop aria-hidden size={17} weight="fill" />}
-          variant="outline"
-          onClick={onStopAll}
-        >
-          {t("stopAll")}
-        </Button>
-      </Group>
-    </footer>
+      </footer>
+      <Drawer
+        closeButtonProps={{ "aria-label": t("close") }}
+        opened={activityOpened}
+        position="left"
+        size="min(440px, 100vw)"
+        title={t("activity")}
+        onClose={activity.close}
+      >
+        <Group align="flex-end" justify="space-between" mb="sm">
+          <Box style={{ flex: 1 }}>
+            {rechecking ? (
+              <>
+                <Text size="xs">
+                  {t("recheckProgress", {
+                    completed: Number(changeAssessmentProgress.completed),
+                    total: Number(changeAssessmentProgress.total),
+                  })}
+                </Text>
+                {changeAssessmentProgress.current_folder ? (
+                  <Text c="dimmed" lineClamp={1} size="xs">
+                    {changeAssessmentProgress.current_folder}
+                  </Text>
+                ) : null}
+                <Progress.Root mt={4} radius="xl" size="xs">
+                  <Progress.Section
+                    value={
+                      changeAssessmentProgress.total === 0n
+                        ? 100
+                        : (Number(changeAssessmentProgress.completed) /
+                            Number(changeAssessmentProgress.total)) *
+                          100
+                    }
+                  />
+                </Progress.Root>
+              </>
+            ) : null}
+          </Box>
+          {rechecking ? (
+            <Button
+              color="red"
+              size="xs"
+              variant="subtle"
+              onClick={() => void cancelRecheckChanged()}
+            >
+              {t("cancel")}
+            </Button>
+          ) : null}
+          <Button
+            disabled={rechecking}
+            leftSection={<ArrowsClockwise aria-hidden size={15} />}
+            size="xs"
+            variant="default"
+            onClick={() => void recheckChanged()}
+          >
+            {t("recheckChanged")}
+          </Button>
+        </Group>
+        <ActivitySection
+          emptyLabel={t("noActiveRuns")}
+          progressByRun={progressByRun}
+          queuePositionByRun={queuePositionByRun}
+          runs={active}
+          title={t("activeRuns")}
+          onCommand={(name, runId) => void command(name, { runId })}
+        />
+        <ActivitySection
+          emptyLabel={t("noWaitingRuns")}
+          progressByRun={progressByRun}
+          queuePositionByRun={queuePositionByRun}
+          runs={waiting}
+          title={t("waitingRuns")}
+          onCommand={(name, runId) => void command(name, { runId })}
+        />
+      </Drawer>
+    </>
   );
+}
+
+function ActivitySection({
+  title,
+  emptyLabel,
+  runs,
+  progressByRun,
+  queuePositionByRun,
+  onCommand,
+}: {
+  title: string;
+  emptyLabel: string;
+  runs: RunRecord[];
+  progressByRun: ReadonlyMap<string, ProgressSnapshot>;
+  queuePositionByRun: ReadonlyMap<string, number>;
+  onCommand: (
+    name: "pause_run" | "resume_run" | "stop_run",
+    runId: string,
+  ) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <Stack gap="xs" mb="lg">
+      <Title order={3}>{title}</Title>
+      {runs.length === 0 ? (
+        <Text c="dimmed" size="sm">
+          {emptyLabel}
+        </Text>
+      ) : null}
+      {runs.map((run) => {
+        const progress = progressByRun.get(run.run_id);
+        return (
+          <Paper key={run.run_id} p="sm" withBorder>
+            <Group justify="space-between" wrap="nowrap">
+              <Box miw={0}>
+                <Text fw={650} lineClamp={1}>
+                  {basename(run.snapshot.folder.source)}
+                </Text>
+                <Text c="dimmed" size="xs">
+                  {run.snapshot.action.spec.action_type} ·{" "}
+                  {run.state === "queued"
+                    ? t("queuePosition", {
+                        position: queuePositionByRun.get(run.run_id) ?? "—",
+                      })
+                    : run.state}
+                  {progress?.current_path ? ` · ${progress.current_path}` : ""}
+                  {progress?.total_bytes && Number(progress.total_bytes) > 0
+                    ? ` · ${Math.min(100, Math.round((Number(progress.completed_bytes) / Number(progress.total_bytes)) * 100))}%`
+                    : ""}
+                </Text>
+              </Box>
+              <Group gap={4} wrap="nowrap">
+                {run.state === "paused" ? (
+                  <CardAction
+                    icon={<Play aria-hidden size={15} />}
+                    label={t("resume")}
+                    onClick={() => onCommand("resume_run", run.run_id)}
+                  />
+                ) : run.state === "running" || run.state === "planning" ? (
+                  <CardAction
+                    icon={<Pause aria-hidden size={15} />}
+                    label={t("pause")}
+                    onClick={() => onCommand("pause_run", run.run_id)}
+                  />
+                ) : null}
+                <CardAction
+                  color="red"
+                  disabled={run.state === "stopping"}
+                  icon={<Stop aria-hidden size={15} />}
+                  label={t("stop")}
+                  onClick={() => onCommand("stop_run", run.run_id)}
+                />
+              </Group>
+            </Group>
+          </Paper>
+        );
+      })}
+    </Stack>
+  );
+}
+
+function outcomeColor(
+  outcome: FolderOperationalSummary["latest_outcome"],
+): string {
+  if (outcome === "succeeded") return "green";
+  if (outcome === "succeeded_with_warnings") return "yellow";
+  if (outcome === "failed") return "red";
+  return "gray";
+}
+
+function changeColor(state: FolderOperationalSummary["change_state"]): string {
+  if (state === "changed" || state === "no_checkpoint") return "orange";
+  if (state === "unchanged") return "green";
+  return "gray";
 }
 
 function Meta({

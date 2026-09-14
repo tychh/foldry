@@ -5,17 +5,17 @@ export const foldryTheme = createTheme({
   primaryShade: { light: 7, dark: 5 },
   defaultRadius: "sm",
   fontFamily:
-    "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+    "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
   fontFamilyMonospace:
     "IBM Plex Mono, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
   headings: {
     fontFamily:
-      "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+      "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
     fontWeight: "650",
     sizes: {
-      h1: { fontSize: rem(28), lineHeight: "1.2" },
-      h2: { fontSize: rem(19), lineHeight: "1.3" },
-      h3: { fontSize: rem(16), lineHeight: "1.35" },
+      h1: { fontSize: rem(23), lineHeight: "1.2" },
+      h2: { fontSize: rem(17), lineHeight: "1.3" },
+      h3: { fontSize: rem(15), lineHeight: "1.35" },
     },
   },
   spacing: {

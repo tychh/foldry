@@ -18,6 +18,7 @@ const stateMessage: Record<DisplayRunState, MessageKey> = {
   failed: "failed",
   stopped: "stopped",
   interrupted: "interrupted",
+  skipped: "skipped",
 };
 
 export function RunStatus({ state }: { state: DisplayRunState }) {

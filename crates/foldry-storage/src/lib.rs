@@ -3,6 +3,7 @@
 mod archive_runner;
 mod database;
 mod directories;
+mod fingerprint;
 mod manifest;
 mod migration;
 mod presets;
@@ -13,6 +14,10 @@ mod yaml;
 pub use archive_runner::ArchiveRunExecutor;
 pub use database::SqliteRepository;
 pub use directories::{AppDirectories, DirectoryError, DirectoryOverrides};
+pub use fingerprint::{
+    SOURCE_FINGERPRINT_ALGORITHM_VERSION, SourceFingerprint, fingerprint_manifest,
+    fingerprint_manifest_cancellable,
+};
 pub use manifest::{
     ManifestCursor, ManifestEntryReader, ManifestError, ManifestHandle, ManifestPage,
     ManifestWriter, ScanManifestError, scan_to_manifest, temporary_manifest_directory,
@@ -20,8 +25,9 @@ pub use manifest::{
 pub use migration::{DocumentKind, MigrationRegistry, MigrationStep};
 pub use presets::{ResourcePresetError, load_preset_catalog};
 pub use reconciliation::{
-    ArtifactCleanupReport, ProcessProbe, StartupReconciliationReport, SystemProcessProbe,
-    clean_stale_manifests, clean_stale_output_artifacts, reconcile_startup,
+    ArtifactCleanupReport, ProcessProbe, RecoveryContext, StartupReconciliationReport,
+    SystemProcessProbe, clean_stale_manifests, clean_stale_output_artifacts,
+    current_process_started_unix_seconds, reconcile_startup,
 };
 pub use repositories::{
     FileActivePlanRepository, FilePresetRepository, FileProfileRepository, FileSettingsRepository,

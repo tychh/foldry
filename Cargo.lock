@@ -1237,9 +1237,11 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sevenz-rust2",
  "sha2",
  "tar",
  "tempfile",
+ "time",
  "uuid",
  "zip",
  "zstd",
@@ -1259,6 +1261,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_yaml_ng",
+ "sha2",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.19",
@@ -1270,6 +1273,7 @@ version = "0.1.2"
 dependencies = [
  "foldry-application",
  "foldry-storage",
+ "jiff",
  "serde",
  "serde_json",
  "sha2",
@@ -1277,6 +1281,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
  "tempfile",
 ]
 
@@ -2340,6 +2345,12 @@ name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+
+[[package]]
+name = "lzma-rust2"
+version = "0.20.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e2a88783b84d2d67ef2791778a9e76bfb68b8017aaf6c9d7d5f2626a478b16c"
 
 [[package]]
 name = "markup5ever"
@@ -3638,6 +3649,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sevenz-rust2"
+version = "0.22.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb967eb8b29410e61e8c9005058fcfd5889d0b827856beb25529c73dfc86a98a"
+dependencies = [
+ "crc32fast",
+ "js-sys",
+ "lzma-rust2",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4145,6 +4168,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tauri-plugin-single-instance"
+version = "2.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5cd0cb5c412a5071b69bab6a6df1583cbb89460d4a83b6a24769b08d15b6b1e1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "windows-sys 0.60.2",
+ "zbus",
+]
+
+[[package]]
 name = "tauri-runtime"
 version = "2.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4322,6 +4361,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e1d5e639ff6bab73cb6885cc7e7b1de96c3f32c68ec55f3952614bec1092244"
 dependencies = [
  "deranged",
+ "js-sys",
  "num-conv",
  "powerfmt",
  "serde_core",
@@ -5751,6 +5791,7 @@ dependencies = [
  "flate2",
  "indexmap 2.14.0",
  "memchr",
+ "time",
  "typed-path",
 ]
 

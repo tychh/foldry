@@ -15,7 +15,8 @@ pub struct SettingsVersion(pub u16);
 
 impl SettingsVersion {
     pub const V1: Self = Self(1);
-    pub const CURRENT: Self = Self::V1;
+    pub const V2: Self = Self(2);
+    pub const CURRENT: Self = Self::V2;
 }
 
 impl Default for SettingsVersion {
@@ -48,6 +49,18 @@ pub enum BrowserView {
     #[default]
     Tree,
     List,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FolderSortMode {
+    NameAscending,
+    NameDescending,
+    RecentlyAdded,
+    #[default]
+    OldestAdded,
+    RecentlyRun,
+    LeastRecentlyRun,
 }
 
 /// Defaults copied into a newly created archive action.
@@ -118,6 +131,8 @@ pub struct Settings {
     pub history: HistorySettings,
     #[serde(default)]
     pub browser: BrowserSettings,
+    #[serde(default)]
+    pub folder_sort_mode: FolderSortMode,
     #[serde(default, skip_serializing_if = "Extensions::is_empty", flatten)]
     pub extensions: Extensions,
 }
@@ -160,6 +175,7 @@ impl Default for Settings {
                 extensions: Extensions::new(),
             },
             browser: BrowserSettings::default(),
+            folder_sort_mode: FolderSortMode::default(),
             extensions: Extensions::new(),
         }
     }

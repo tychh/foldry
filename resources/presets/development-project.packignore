@@ -1,0 +1,28 @@
+# @preset-id development-project
+# @preset-version 2
+# @preset-name Development Project
+# @preset-description Keeps only Git-ignored candidates, then removes safe language, framework, IDE, VCS, OS, build, test, and cache artifacts.
+# @preset-safety safe
+# @preset-include id=build-output
+# @preset-include id=test-artifacts
+# @preset-include id=coverage
+# @preset-include id=python
+# @preset-include id=nodejs
+# @preset-include id=rust
+# @preset-include id=go
+# @preset-include id=java
+# @preset-include id=dotnet
+# @preset-include id=php
+# @preset-include id=ruby
+# @preset-include id=cpp
+# @preset-include id=cmake
+# @preset-include id=django
+# @preset-include id=react-vite
+# @preset-include id=nextjs
+# @preset-include id=vue
+# @preset-include id=jetbrains
+# @preset-include id=vscode
+# @preset-include id=vcs-internals
+# @preset-include id=os-metadata
+
+# @rule-source gitignore mode=exclude-unignored nested=true

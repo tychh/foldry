@@ -11,10 +11,10 @@ use std::{
 };
 
 use foldry_application::{
-    Clock, Extensions, FolderId, FolderSnapshot, LogLevel, LogRepository, PageRequest,
-    ProgressPhase, ProgressSnapshot, ResultSummary, RunEvent, RunEventKind, RunEventSink,
-    RunExecutor, RunHistoryRepository, RunId, RunOutcome, RunRecord, RunReporter, RunSnapshot,
-    RunState, Scheduler, SchedulerPorts, Settings,
+    ActionId, Clock, Extensions, FolderId, FolderSnapshot, LogLevel, LogRepository, PageRequest,
+    ProgressPhase, ProgressSnapshot, RepositoryError, ResultSummary, RunEvent, RunEventKind,
+    RunEventSink, RunExecutor, RunHistoryRepository, RunId, RunOutcome, RunRecord, RunReporter,
+    RunSnapshot, RunState, Scheduler, SchedulerPorts, Settings,
 };
 use foldry_storage::{SqliteRepository, decode_plan};
 use jiff::Timestamp;
@@ -171,6 +171,145 @@ impl RunExecutor for BurstExecutor {
 }
 
 #[derive(Default)]
+struct CommitExecutor {
+    committed: Mutex<bool>,
+    released: Condvar,
+}
+
+impl CommitExecutor {
+    fn wait_for_commit(&self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut committed = self.committed.lock().unwrap();
+        while !*committed {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "executor did not commit publication");
+            committed = self.released.wait_timeout(committed, remaining).unwrap().0;
+        }
+    }
+
+    fn release(&self) {
+        *self.committed.lock().unwrap() = false;
+        self.released.notify_all();
+    }
+}
+
+impl RunExecutor for CommitExecutor {
+    fn execute(
+        &self,
+        _run: &RunRecord,
+        control: &foldry_application::ExecutionControl,
+        _reporter: &dyn RunReporter,
+    ) -> ResultSummary {
+        assert!(control.try_commit_publish());
+        let mut committed = self.committed.lock().unwrap();
+        *committed = true;
+        self.released.notify_all();
+        while *committed {
+            committed = self.released.wait(committed).unwrap();
+        }
+        summary(RunOutcome::Succeeded)
+    }
+}
+
+struct PanicExecutor;
+
+impl RunExecutor for PanicExecutor {
+    fn execute(
+        &self,
+        _run: &RunRecord,
+        _control: &foldry_application::ExecutionControl,
+        _reporter: &dyn RunReporter,
+    ) -> ResultSummary {
+        panic!("fault-injected executor panic");
+    }
+}
+
+struct FlakyTerminalHistory {
+    inner: Arc<SqliteRepository>,
+    failures_remaining: AtomicUsize,
+}
+
+impl FlakyTerminalHistory {
+    fn new(inner: Arc<SqliteRepository>, failures: usize) -> Self {
+        Self {
+            inner,
+            failures_remaining: AtomicUsize::new(failures),
+        }
+    }
+}
+
+impl RunHistoryRepository for FlakyTerminalHistory {
+    fn insert(&self, run: &RunRecord) -> Result<(), RepositoryError> {
+        self.inner.insert(run)
+    }
+
+    fn update(&self, run: &RunRecord) -> Result<(), RepositoryError> {
+        let should_fail = foldry_application::is_terminal(run.state)
+            && self
+                .failures_remaining
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok();
+        if should_fail {
+            Err(RepositoryError::new(
+                "fault-injected terminal write failure",
+            ))
+        } else {
+            self.inner.update(run)
+        }
+    }
+
+    fn get(&self, run_id: RunId) -> Result<Option<RunRecord>, RepositoryError> {
+        self.inner.get(run_id)
+    }
+
+    fn page_filtered(
+        &self,
+        page: PageRequest,
+        folder_id: Option<FolderId>,
+        action_id: Option<ActionId>,
+    ) -> Result<Vec<RunRecord>, RepositoryError> {
+        self.inner.page_filtered(page, folder_id, action_id)
+    }
+
+    fn non_terminal_for_folder(
+        &self,
+        folder_id: FolderId,
+    ) -> Result<Vec<RunRecord>, RepositoryError> {
+        self.inner.non_terminal_for_folder(folder_id)
+    }
+
+    fn non_terminal_for_action(
+        &self,
+        folder_id: FolderId,
+        action_id: ActionId,
+    ) -> Result<Vec<RunRecord>, RepositoryError> {
+        self.inner.non_terminal_for_action(folder_id, action_id)
+    }
+
+    fn mark_unfinished_interrupted(&self, at: Timestamp) -> Result<u64, RepositoryError> {
+        self.inner.mark_unfinished_interrupted(at)
+    }
+
+    fn apply_retention(
+        &self,
+        now: Timestamp,
+        max_age_days: u32,
+        max_entries: u32,
+        unlimited: bool,
+    ) -> Result<u64, RepositoryError> {
+        RunHistoryRepository::apply_retention(
+            self.inner.as_ref(),
+            now,
+            max_age_days,
+            max_entries,
+            unlimited,
+        )
+    }
+}
+
+#[derive(Default)]
 struct StressExecutor {
     active: AtomicUsize,
     max_active: AtomicUsize,
@@ -288,6 +427,65 @@ fn global_pause_holds_queued_work_until_resume() {
     executor.wait_for_started(1);
     executor.release(run.folder_id);
     events.wait_for_terminal(run.run_id);
+}
+
+#[test]
+fn scheduler_snapshot_reports_exact_fifo_positions_and_pause_state() {
+    let repository = Arc::new(SqliteRepository::open_in_memory().unwrap());
+    let executor = Arc::new(StressExecutor::default());
+    let events = Arc::new(CollectingEvents::default());
+    let scheduler = scheduler(repository, executor, events, 1);
+    scheduler.pause_all().unwrap();
+    let runs = (0..3).map(|_| sample_run()).collect::<Vec<_>>();
+    for run in &runs {
+        scheduler.enqueue(run.clone()).unwrap();
+    }
+
+    let snapshot = scheduler.snapshot().unwrap();
+    assert!(snapshot.globally_paused);
+    assert_eq!(snapshot.active, 0);
+    assert_eq!(snapshot.waiting, 3);
+    assert_eq!(
+        snapshot
+            .runs
+            .iter()
+            .map(|run| (run.record.run_id, run.queue_position))
+            .collect::<Vec<_>>(),
+        vec![
+            (runs[0].run_id, Some(1)),
+            (runs[1].run_id, Some(2)),
+            (runs[2].run_id, Some(3)),
+        ]
+    );
+    scheduler.stop_all().unwrap();
+}
+
+#[test]
+fn terminal_runs_leave_the_active_map_and_late_commands_are_idempotent() {
+    let repository = Arc::new(SqliteRepository::open_in_memory().unwrap());
+    let executor = Arc::new(StressExecutor::default());
+    let events = Arc::new(CollectingEvents::default());
+    let scheduler = scheduler(repository, executor, events.clone(), 8);
+    let runs = (0..128).map(|_| sample_run()).collect::<Vec<_>>();
+    for run in &runs {
+        scheduler.enqueue(run.clone()).unwrap();
+    }
+    for run in &runs {
+        events.wait_for_terminal(run.run_id);
+    }
+
+    for _ in 0..100 {
+        if scheduler.records().unwrap().is_empty() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(scheduler.records().unwrap().is_empty());
+    assert!(!scheduler.stop(runs[0].run_id).unwrap());
+    assert_eq!(
+        scheduler.record(runs[0].run_id).unwrap().state,
+        RunState::Succeeded
+    );
 }
 
 #[test]
@@ -447,6 +645,95 @@ fn concurrent_commands_are_idempotent_and_persistence_matches_the_final_state() 
 }
 
 #[test]
+fn late_stop_after_publish_commit_is_rejected_and_run_succeeds() {
+    let repository = Arc::new(SqliteRepository::open_in_memory().unwrap());
+    let executor = Arc::new(CommitExecutor::default());
+    let events = Arc::new(CollectingEvents::default());
+    let scheduler = scheduler(Arc::clone(&repository), executor.clone(), events.clone(), 1);
+    let run = sample_run();
+    scheduler.enqueue(run.clone()).unwrap();
+    executor.wait_for_commit();
+
+    assert!(!scheduler.stop(run.run_id).unwrap());
+    executor.release();
+    events.wait_for_terminal(run.run_id);
+
+    assert_eq!(
+        scheduler.record(run.run_id).unwrap().state,
+        RunState::Succeeded
+    );
+    assert_eq!(
+        repository.get(run.run_id).unwrap().unwrap().state,
+        RunState::Succeeded
+    );
+}
+
+#[test]
+fn executor_panic_becomes_failed_and_releases_the_next_slot() {
+    let repository = Arc::new(SqliteRepository::open_in_memory().unwrap());
+    let events = Arc::new(CollectingEvents::default());
+    let scheduler = scheduler(
+        Arc::clone(&repository),
+        Arc::new(PanicExecutor),
+        events.clone(),
+        1,
+    );
+    let first = sample_run();
+    let second = sample_run();
+    scheduler.enqueue(first.clone()).unwrap();
+    scheduler.enqueue(second.clone()).unwrap();
+
+    events.wait_for_completed_count(2);
+
+    assert_eq!(
+        scheduler.record(first.run_id).unwrap().state,
+        RunState::Failed
+    );
+    assert_eq!(
+        scheduler.record(second.run_id).unwrap().state,
+        RunState::Failed
+    );
+}
+
+#[test]
+fn transient_terminal_persistence_failure_retries_without_holding_the_slot() {
+    let repository = Arc::new(SqliteRepository::open_in_memory().unwrap());
+    let history = Arc::new(FlakyTerminalHistory::new(Arc::clone(&repository), 2));
+    let executor = Arc::new(ControlledExecutor::default());
+    let events = Arc::new(CollectingEvents::default());
+    let scheduler = scheduler_with_history(
+        history,
+        repository.clone(),
+        executor.clone(),
+        events.clone(),
+        1,
+    );
+    let first = sample_run();
+    let second = sample_run();
+    scheduler.enqueue(first.clone()).unwrap();
+    scheduler.enqueue(second.clone()).unwrap();
+    executor.wait_for_started(1);
+    executor.release(first.folder_id);
+    events.wait_for_terminal(first.run_id);
+    executor.wait_for_started(2);
+    executor.release(second.folder_id);
+    events.wait_for_terminal(second.run_id);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while repository.get(first.run_id).unwrap().unwrap().state != RunState::Succeeded
+        || repository.get(second.run_id).unwrap().unwrap().state != RunState::Succeeded
+    {
+        assert!(
+            Instant::now() < deadline,
+            "terminal persistence did not converge"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    assert_eq!(scheduler.persistence_error(), None);
+}
+
+#[test]
 fn stress_queue_never_exceeds_its_limit_and_preserves_dispatch_order() {
     let repository = Arc::new(SqliteRepository::open_in_memory().unwrap());
     let executor = Arc::new(StressExecutor::default());
@@ -489,6 +776,16 @@ fn scheduler(
 ) -> Scheduler {
     let history: Arc<dyn RunHistoryRepository> = repository.clone();
     let logs: Arc<dyn LogRepository> = repository;
+    scheduler_with_history(history, logs, executor, events, limit)
+}
+
+fn scheduler_with_history(
+    history: Arc<dyn RunHistoryRepository>,
+    logs: Arc<dyn LogRepository>,
+    executor: Arc<dyn RunExecutor>,
+    events: Arc<CollectingEvents>,
+    limit: u16,
+) -> Scheduler {
     Scheduler::start(
         SchedulerPorts {
             history,
@@ -523,6 +820,7 @@ fn sample_run() -> RunRecord {
             settings: Settings::default(),
             profile_text: "# snapshot".into(),
             profile_hash: "hash".into(),
+            effective_profile: None,
         },
         summary: None,
     }
@@ -558,5 +856,6 @@ fn summary(outcome: RunOutcome) -> ResultSummary {
         artifact: None,
         warnings: Vec::new(),
         error: None,
+        skip_reason: None,
     }
 }

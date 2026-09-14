@@ -5,7 +5,6 @@ use std::{
 };
 
 use jiff::Timestamp;
-use sha2::{Digest, Sha256};
 
 use crate::{
     ActionId, ActionSpec, ActionVersion, ActivePlanRepository, ArchiveActionSpec,
@@ -13,8 +12,8 @@ use crate::{
     DEFAULT_PROFILE_FILENAME, Extensions, Folder, FolderAction, FolderId, FolderSnapshot,
     IdGenerator, LogRecord, LogRepository, PageRequest, ParserDiagnostic, Plan, PlanVersion,
     PresetId, PresetRepository, ProfileId, ProfileRepository, RepositoryError,
-    RunHistoryRepository, RunId, RunRecord, RunSnapshot, RunState, Settings, SettingsRepository,
-    StoredPreset, StoredProfile, VerificationSpec,
+    RunHistoryRepository, RunId, RunOutcome, RunRecord, RunSnapshot, RunState, Settings,
+    SettingsRepository, StoredPreset, StoredProfile, VerificationSpec, resolve_effective_profile,
 };
 
 pub struct ApplicationPorts {
@@ -47,12 +46,41 @@ pub struct RetentionReport {
     pub deleted_logs: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FolderAvailability {
+    Available,
+    Missing,
+    Unavailable(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChangeState {
+    Checking,
+    Unchanged,
+    Changed,
+    NoCheckpoint,
+    Missing,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FolderOperationalSummary {
+    pub folder_id: FolderId,
+    pub availability: FolderAvailability,
+    pub latest_outcome: Option<RunOutcome>,
+    pub latest_run_at: Option<Timestamp>,
+    pub last_successful_artifact: Option<crate::ArchiveArtifact>,
+    pub artifact_available: bool,
+    pub change_state: ChangeState,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum UseCaseError {
     Repository(RepositoryError),
     NotFound(String),
     Conflict(String),
     Invalid(String),
+    SourceUnavailable(String),
     InvalidProfile {
         profile_id: ProfileId,
         diagnostics: Vec<ParserDiagnostic>,
@@ -63,9 +91,10 @@ impl fmt::Display for UseCaseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Repository(error) => error.fmt(formatter),
-            Self::NotFound(message) | Self::Conflict(message) | Self::Invalid(message) => {
-                formatter.write_str(message)
-            }
+            Self::NotFound(message)
+            | Self::Conflict(message)
+            | Self::Invalid(message)
+            | Self::SourceUnavailable(message) => formatter.write_str(message),
             Self::InvalidProfile { profile_id, .. } => {
                 write!(formatter, "profile {profile_id} is invalid")
             }
@@ -222,6 +251,7 @@ impl ApplicationServices {
         let folder = Folder {
             id: self.ports.ids.folder_id(),
             source: canonical_source,
+            created_at: self.ports.clock.now(),
             listed: true,
             enabled: true,
             default_profile_id,
@@ -243,7 +273,20 @@ impl ApplicationServices {
 
     pub fn update_folder(&self, folder: Folder) -> Result<(), UseCaseError> {
         let mut folder = folder;
-        folder.source = canonical_directory(&folder.source)?;
+        let existing = self
+            .lock_state()?
+            .active_plan
+            .folders
+            .iter()
+            .find(|candidate| candidate.id == folder.id)
+            .cloned()
+            .ok_or_else(|| UseCaseError::NotFound(format!("folder {} not found", folder.id)))?;
+        if folder.source != existing.source {
+            return Err(UseCaseError::Conflict(
+                "source_change_requires_locate".into(),
+            ));
+        }
+        folder.created_at = existing.created_at;
         folder.default_profile_id =
             valid_profile_id(&self.require_valid_profile(folder.default_profile_id)?)?;
         for action in &mut folder.actions {
@@ -267,6 +310,127 @@ impl ApplicationServices {
         self.ports.active_plan.save(&next)?;
         state.active_plan = next;
         Ok(())
+    }
+
+    pub fn locate_folder(
+        &self,
+        folder_id: FolderId,
+        new_source: PathBuf,
+    ) -> Result<Folder, UseCaseError> {
+        self.ensure_folder_has_no_active_runs(folder_id)?;
+        let canonical_source = canonical_directory(&new_source)?;
+        let mut state = self.lock_state()?;
+        let index = state
+            .active_plan
+            .folders
+            .iter()
+            .position(|folder| folder.id == folder_id)
+            .ok_or_else(|| UseCaseError::NotFound(format!("folder {folder_id} not found")))?;
+        let mut folder = state.active_plan.folders[index].clone();
+        folder.source = canonical_source;
+        ensure_unique_source(&state.active_plan, &folder, Some(folder_id))?;
+        for action in &mut folder.actions {
+            canonicalize_action_output(&folder.source, action)?;
+        }
+        let mut next = state.active_plan.clone();
+        next.folders[index] = folder.clone();
+        validate_plan(&next)?;
+        self.ports.active_plan.save(&next)?;
+        state.active_plan = next;
+        Ok(folder)
+    }
+
+    pub fn folder_availability(
+        &self,
+        folder_id: FolderId,
+    ) -> Result<FolderAvailability, UseCaseError> {
+        let source = self
+            .lock_state()?
+            .active_plan
+            .folders
+            .iter()
+            .find(|folder| folder.id == folder_id)
+            .map(|folder| folder.source.clone())
+            .ok_or_else(|| UseCaseError::NotFound(format!("folder {folder_id} not found")))?;
+        Ok(Self::folder_availability_for_path(&source))
+    }
+
+    pub fn folder_operational_summaries(
+        &self,
+    ) -> Result<Vec<FolderOperationalSummary>, UseCaseError> {
+        let folders = self.lock_state()?.active_plan.folders.clone();
+        let folder_ids = folders.iter().map(|folder| folder.id).collect::<Vec<_>>();
+        let operational = self.ports.history.operational_states(&folder_ids)?;
+        let checkpoints = self.ports.history.checkpoints(&folder_ids)?;
+        Ok(folders
+            .into_iter()
+            .map(|folder| {
+                let availability = Self::folder_availability_for_path(&folder.source);
+                let latest = operational
+                    .iter()
+                    .filter(|state| state.folder_id == folder.id)
+                    .max_by_key(|state| state.latest_finished_at);
+                let artifact = operational
+                    .iter()
+                    .filter(|state| state.folder_id == folder.id)
+                    .filter(|state| state.last_successful_artifact.is_some())
+                    .max_by_key(|state| state.latest_finished_at)
+                    .and_then(|state| state.last_successful_artifact.clone());
+                let artifact_available = artifact.as_ref().is_some_and(|artifact| {
+                    std::fs::symlink_metadata(&artifact.path).is_ok_and(|metadata| {
+                        metadata.file_type().is_file() && !metadata.file_type().is_symlink()
+                    })
+                });
+                let has_missing_checkpoint = folder
+                    .actions
+                    .iter()
+                    .filter(|action| action.enabled)
+                    .any(|action| {
+                        !checkpoints.iter().any(|checkpoint| {
+                            checkpoint.folder_id == folder.id && checkpoint.action_id == action.id
+                        })
+                    });
+                let change_state = match availability {
+                    FolderAvailability::Missing | FolderAvailability::Unavailable(_) => {
+                        ChangeState::Missing
+                    }
+                    FolderAvailability::Available if has_missing_checkpoint => {
+                        ChangeState::NoCheckpoint
+                    }
+                    FolderAvailability::Available => ChangeState::Unknown,
+                };
+                FolderOperationalSummary {
+                    folder_id: folder.id,
+                    availability,
+                    latest_outcome: latest.map(|state| state.latest_outcome),
+                    latest_run_at: latest.map(|state| state.latest_finished_at),
+                    last_successful_artifact: artifact,
+                    artifact_available,
+                    change_state,
+                }
+            })
+            .collect())
+    }
+
+    pub fn action_checkpoints(
+        &self,
+        folder_ids: &[FolderId],
+    ) -> Result<Vec<crate::ActionCheckpoint>, UseCaseError> {
+        self.ports
+            .history
+            .checkpoints(folder_ids)
+            .map_err(Into::into)
+    }
+
+    fn folder_availability_for_path(source: &Path) -> FolderAvailability {
+        match std::fs::metadata(source) {
+            Ok(metadata) if metadata.is_dir() => FolderAvailability::Available,
+            Ok(_) => FolderAvailability::Unavailable("source is not a directory".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                FolderAvailability::Missing
+            }
+            Err(error) => FolderAvailability::Unavailable(error.to_string()),
+        }
     }
 
     pub fn unlist_folder(&self, folder_id: FolderId) -> Result<bool, UseCaseError> {
@@ -436,6 +600,7 @@ impl ApplicationServices {
             return Ok(false);
         }
         self.ports.active_plan.save(&next)?;
+        self.ports.history.forget_action(folder_id, action_id)?;
         state.active_plan = next;
         Ok(true)
     }
@@ -711,6 +876,7 @@ impl ApplicationServices {
     ) -> Result<PreviewRequest, UseCaseError> {
         let state = self.lock_state()?;
         let folder = find_folder(&state.active_plan, folder_id)?.clone();
+        ensure_available(&folder)?;
         let action = find_action(&folder, action_id)?.clone();
         executable_action(&action)?;
         let profile = self.require_valid_profile(action.effective_profile_id(&folder))?;
@@ -728,6 +894,7 @@ impl ApplicationServices {
     ) -> Result<RunRecord, UseCaseError> {
         let state = self.lock_state()?;
         let folder = find_folder(&state.active_plan, folder_id)?;
+        ensure_available(folder)?;
         let action = find_action(folder, action_id)?;
         executable_action(action)?;
         let profile = self.require_valid_profile(action.effective_profile_id(folder))?;
@@ -740,6 +907,7 @@ impl ApplicationServices {
     ) -> Result<Vec<RunRecord>, UseCaseError> {
         let state = self.lock_state()?.clone();
         let folder = find_folder(&state.active_plan, folder_id)?;
+        ensure_available(folder)?;
         let mut snapshots = Vec::new();
         for action in folder.actions.iter().filter(|action| action.enabled) {
             executable_action(action)?;
@@ -760,6 +928,12 @@ impl ApplicationServices {
             .folders
             .iter()
             .filter(|folder| folder.listed && folder.enabled)
+            .filter(|folder| {
+                matches!(
+                    Self::folder_availability_for_path(&folder.source),
+                    FolderAvailability::Available
+                )
+            })
         {
             for action in folder.actions.iter().filter(|action| action.enabled) {
                 executable_action(action)?;
@@ -1112,6 +1286,20 @@ fn executable_action(action: &FolderAction) -> Result<&ActionSpec, UseCaseError>
     }
 }
 
+fn ensure_available(folder: &Folder) -> Result<(), UseCaseError> {
+    match ApplicationServices::folder_availability_for_path(&folder.source) {
+        FolderAvailability::Available => Ok(()),
+        FolderAvailability::Missing => Err(UseCaseError::SourceUnavailable(format!(
+            "source folder is missing: {}",
+            folder.source.display()
+        ))),
+        FolderAvailability::Unavailable(message) => Err(UseCaseError::SourceUnavailable(format!(
+            "source folder is unavailable: {}: {message}",
+            folder.source.display()
+        ))),
+    }
+}
+
 fn run_snapshot(
     folder: &Folder,
     action: &FolderAction,
@@ -1119,6 +1307,8 @@ fn run_snapshot(
     profile: StoredProfile,
 ) -> Result<RunSnapshot, UseCaseError> {
     let effective_profile_id = valid_profile_id(&profile)?;
+    let effective_profile = resolve_effective_profile(&profile.text, &folder.source)
+        .map_err(|error| UseCaseError::Invalid(error.to_string()))?;
     Ok(RunSnapshot {
         folder: FolderSnapshot {
             id: folder.id,
@@ -1127,8 +1317,9 @@ fn run_snapshot(
         action: action.clone(),
         effective_profile_id,
         settings: settings.clone(),
-        profile_hash: sha256(&profile.text),
+        profile_hash: effective_profile.hash.clone(),
         profile_text: profile.text,
+        effective_profile: Some(effective_profile),
     })
 }
 
@@ -1210,8 +1401,4 @@ fn validate_plan(plan: &Plan) -> Result<(), UseCaseError> {
                 .join("; "),
         ))
     }
-}
-
-fn sha256(text: &str) -> String {
-    format!("{:x}", Sha256::digest(text.as_bytes()))
 }

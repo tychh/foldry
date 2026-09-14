@@ -1,26 +1,48 @@
 use std::{
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use foldry_application::{
-    ActionSpec, ArchiveArtifact, CompiledProfile, ErrorCode, ExecutionControl, ExecutionError,
-    ExecutionPlan, ExecutionWarning, Extensions, FileSystemScanner, FoldryError, FoldryWarning,
-    LogLevel, PlanOutput, ProgressPhase, ProgressSnapshot, ResultSummary, RunExecutor, RunOutcome,
-    RunRecord, RunReporter, ScanSink, ScanSinkError, ScannedEntry, WarningCode,
-    detect_case_sensitivity, execute_archive, parse_profile, reserve_output,
+    ActionCheckpoint, ActionSpec, ArchiveArtifact, CompiledProfile, ErrorCode, ExecutionControl,
+    ExecutionError, ExecutionPhase, ExecutionPlan, ExecutionWarning, Extensions, FileSystemScanner,
+    FoldryError, FoldryWarning, LogLevel, OutputDirectoryRegistry, PlanOutput, ProgressPhase,
+    ProgressSnapshot, ReservationOwner, ResultSummary, RunExecutor, RunOutcome, RunRecord,
+    RunReporter, ScanSink, ScanSinkError, ScannedEntry, SkipReason, WarningCode,
+    detect_case_sensitivity, execute_archive, reserve_output, reserve_output_owned,
+    resolve_effective_profile,
 };
 
-use crate::{ManifestEntryReader, ManifestWriter};
+use crate::{ManifestEntryReader, ManifestWriter, fingerprint_manifest};
 
 pub struct ArchiveRunExecutor {
     manifest_directory: PathBuf,
+    owner: Option<ReservationOwner>,
+    output_directories: Option<Arc<dyn OutputDirectoryRegistry>>,
 }
 
 impl ArchiveRunExecutor {
     #[must_use]
     pub fn new(manifest_directory: PathBuf) -> Self {
-        Self { manifest_directory }
+        Self {
+            manifest_directory,
+            owner: None,
+            output_directories: None,
+        }
+    }
+
+    #[must_use]
+    pub fn owned(
+        manifest_directory: PathBuf,
+        owner: ReservationOwner,
+        output_directories: Arc<dyn OutputDirectoryRegistry>,
+    ) -> Self {
+        Self {
+            manifest_directory,
+            owner: Some(owner),
+            output_directories: Some(output_directories),
+        }
     }
 }
 
@@ -65,26 +87,23 @@ impl ArchiveRunExecutor {
         };
         action.output.filename =
             resolve_filename_template(&action.output.filename, &run.snapshot.folder.source)?;
-        let parsed = parse_profile(&run.snapshot.profile_text);
-        let profile = parsed.profile.ok_or_else(|| {
-            foldry_error(
-                ErrorCode::InvalidProfile,
-                parsed
-                    .diagnostics
-                    .iter()
-                    .map(|diagnostic| diagnostic.message.as_str())
-                    .collect::<Vec<_>>()
-                    .join("; "),
-                None,
+        let effective_profile = match &run.snapshot.effective_profile {
+            Some(snapshot) => snapshot.clone(),
+            None => resolve_effective_profile(
+                &run.snapshot.profile_text,
+                &run.snapshot.folder.source,
             )
-        })?;
-        if profile.id != run.snapshot.effective_profile_id {
+            .map_err(|error| foldry_error(ErrorCode::InvalidProfile, error.to_string(), None))?,
+        };
+        if effective_profile.profile.id != run.snapshot.effective_profile_id {
             return Err(foldry_error(
                 ErrorCode::InvalidProfile,
                 "snapshot profile ID does not match the effective action profile ID".into(),
                 None,
             ));
         }
+        let dynamic_source_missing = !effective_profile.profile.rule_sources.is_empty()
+            && effective_profile.resolved_gitignores.is_empty();
         let case = detect_case_sensitivity(&run.snapshot.folder.source).map_err(|error| {
             foldry_error(
                 ErrorCode::SourceUnavailable,
@@ -92,13 +111,45 @@ impl ArchiveRunExecutor {
                 Some(run.snapshot.folder.source.to_string_lossy().into_owned()),
             )
         })?;
-        let matcher = CompiledProfile::new(&profile, case.value)
-            .map_err(|message| foldry_error(ErrorCode::InvalidProfile, message, None))?;
+        let matcher = CompiledProfile::from_snapshot(
+            &effective_profile,
+            &run.snapshot.folder.source,
+            case.value,
+        )
+        .map_err(|message| foldry_error(ErrorCode::InvalidProfile, message, None))?;
         if !control.checkpoint() {
             return Err(cancelled_error());
         }
-        let reservation = reserve_output(&run.snapshot.folder.source, &action.output, run.run_id)
-            .map_err(|error| {
+        if let Some(registry) = &self.output_directories {
+            let directory = action
+                .output
+                .directory
+                .resolve(&run.snapshot.folder.source)
+                .ok_or_else(|| {
+                    foldry_error(
+                        ErrorCode::OutputUnavailable,
+                        "cannot resolve output directory".into(),
+                        None,
+                    )
+                })?;
+            registry.register(&directory).map_err(|error| {
+                foldry_error(
+                    ErrorCode::OutputUnavailable,
+                    format!("cannot register output directory: {error}"),
+                    Some(directory.to_string_lossy().into_owned()),
+                )
+            })?;
+        }
+        let reservation = match &self.owner {
+            Some(owner) => reserve_output_owned(
+                &run.snapshot.folder.source,
+                &action.output,
+                run.run_id,
+                owner,
+            ),
+            None => reserve_output(&run.snapshot.folder.source, &action.output, run.run_id),
+        }
+        .map_err(|error| {
             foldry_error(
                 ErrorCode::OutputUnavailable,
                 error.to_string(),
@@ -113,25 +164,21 @@ impl ArchiveRunExecutor {
             let PlanOutput::Skipped { path } = reservation else {
                 unreachable!()
             };
-            let size_bytes = path.metadata().map_or(0, |metadata| metadata.len());
             reporter.log(
                 LogLevel::Info,
                 "output conflict policy skipped archive creation".into(),
                 Some(path.to_string_lossy().into_owned()),
             );
             return Ok(ResultSummary {
-                outcome: RunOutcome::Succeeded,
+                outcome: RunOutcome::Skipped,
                 included_entries: 0,
                 skipped_entries: 0,
                 source_bytes: 0,
                 duration_ms: duration_ms(started.elapsed()),
-                artifact: Some(ArchiveArtifact {
-                    path,
-                    size_bytes,
-                    checksum_sha256: None,
-                }),
+                artifact: None,
                 warnings: Vec::new(),
                 error: None,
+                skip_reason: Some(SkipReason::OutputConflict),
             });
         };
         reporter.log(
@@ -157,11 +204,12 @@ impl ArchiveRunExecutor {
             total_bytes: None,
             current_path: None,
         });
+        let cancellation = control.cancellation_token();
         let totals = FileSystemScanner::scan(
             &run.snapshot.folder.source,
             &matcher,
             &mut sink,
-            &Default::default(),
+            &cancellation,
         )
         .map_err(|error| {
             if control.is_stopped() {
@@ -181,6 +229,13 @@ impl ArchiveRunExecutor {
             .writer
             .finish()
             .map_err(|error| foldry_error(ErrorCode::WriteFailed, error.to_string(), None))?;
+        let fingerprint = match fingerprint_manifest(&handle, control) {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => {
+                let _ = handle.remove();
+                return Err(foldry_error(ErrorCode::ReadFailed, error, None));
+            }
+        };
         let mut entries = match ManifestEntryReader::open(&handle) {
             Ok(entries) => entries,
             Err(error) => {
@@ -195,7 +250,13 @@ impl ArchiveRunExecutor {
         };
         let execution = execute_archive(&plan, reservation, &mut entries, control, |progress| {
             reporter.progress(ProgressSnapshot {
-                phase: ProgressPhase::Archiving,
+                phase: match progress.phase {
+                    ExecutionPhase::Archiving => ProgressPhase::Archiving,
+                    ExecutionPhase::Verifying | ExecutionPhase::Checksumming => {
+                        ProgressPhase::Verifying
+                    }
+                    ExecutionPhase::Publishing => ProgressPhase::Publishing,
+                },
                 completed_entries: progress.processed_entries,
                 total_entries: Some(totals.included_entries),
                 completed_bytes: progress.processed_bytes,
@@ -208,11 +269,20 @@ impl ArchiveRunExecutor {
         let execution =
             execution.map_err(|error| execution_error(error, &run.snapshot.folder.source))?;
         cleanup.map_err(|error| foldry_error(ErrorCode::WriteFailed, error.to_string(), None))?;
-        let warnings = execution
+        let mut warnings = execution
             .warnings
             .into_iter()
             .map(execution_warning)
             .collect::<Vec<_>>();
+        if dynamic_source_missing {
+            warnings.push(FoldryWarning {
+                code: WarningCode::DynamicRuleSourceMissing,
+                message: "no .gitignore was found; the dynamic profile excluded ordinary paths"
+                    .into(),
+                path: Some(run.snapshot.folder.source.to_string_lossy().into_owned()),
+                extensions: Extensions::new(),
+            });
+        }
         for warning in &warnings {
             reporter.warning(warning.clone());
         }
@@ -221,6 +291,16 @@ impl ArchiveRunExecutor {
             "archive published".into(),
             Some(execution.output_path.to_string_lossy().into_owned()),
         );
+        reporter.checkpoint(ActionCheckpoint {
+            folder_id: run.folder_id,
+            action_id: run.action_id,
+            algorithm_version: fingerprint.algorithm_version,
+            source_fingerprint: fingerprint.digest,
+            effective_profile_hash: run.snapshot.profile_hash.clone(),
+            source_summary: fingerprint.summary,
+            run_id: run.run_id,
+            completed_at: jiff::Timestamp::now(),
+        });
         Ok(ResultSummary {
             outcome: if warnings.is_empty() {
                 RunOutcome::Succeeded
@@ -238,6 +318,7 @@ impl ArchiveRunExecutor {
             }),
             warnings,
             error: None,
+            skip_reason: None,
         })
     }
 }
@@ -366,6 +447,7 @@ fn failed_summary(error: FoldryError, elapsed: Duration) -> ResultSummary {
         artifact: None,
         warnings: Vec::new(),
         error: Some(error),
+        skip_reason: None,
     }
 }
 
@@ -379,6 +461,7 @@ fn stopped_summary(elapsed: Duration) -> ResultSummary {
         artifact: None,
         warnings: Vec::new(),
         error: None,
+        skip_reason: None,
     }
 }
 

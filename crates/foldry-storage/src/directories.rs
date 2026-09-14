@@ -4,6 +4,7 @@ use std::{
 };
 
 use directories::ProjectDirs;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -119,6 +120,20 @@ impl AppDirectories {
     #[must_use]
     pub fn contains_owned_cache_path(&self, path: &Path) -> bool {
         path.starts_with(self.manifests())
+    }
+
+    /// Stable identifier for the canonical config/data/cache ownership boundary.
+    pub fn scope_id(&self) -> Result<String, DirectoryError> {
+        let mut hasher = Sha256::new();
+        for path in [&self.config, &self.data, &self.cache] {
+            let canonical = fs::canonicalize(path).map_err(|source| DirectoryError::Create {
+                path: path.clone(),
+                source,
+            })?;
+            hasher.update(canonical.to_string_lossy().as_bytes());
+            hasher.update([0]);
+        }
+        Ok(format!("{:x}", hasher.finalize()))
     }
 }
 

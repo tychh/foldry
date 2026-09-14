@@ -20,6 +20,13 @@ const HELP_MENU_EVENT: &str = "foldry://open-help";
 /// Starts the Foldry desktop application.
 pub fn run() {
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_opener::Builder::new()
@@ -64,6 +71,9 @@ pub fn run() {
             ipc::add_folder,
             ipc::add_dropped_sources,
             ipc::update_folder,
+            ipc::locate_folder,
+            ipc::probe_folder_availability,
+            ipc::open_source_folder,
             ipc::unlist_folder,
             ipc::unlisted_folders,
             ipc::forget_folders,
@@ -91,6 +101,9 @@ pub fn run() {
             ipc::run_action,
             ipc::run_folder,
             ipc::run_all_enabled,
+            ipc::run_changed,
+            ipc::recheck_changed,
+            ipc::cancel_recheck_changed,
             ipc::repeat_run,
             ipc::scheduler_snapshot,
             ipc::pause_run,
@@ -105,6 +118,7 @@ pub fn run() {
             ipc::export_run_logs,
             ipc::pick_folders,
             ipc::reveal_run_output,
+            ipc::reveal_last_folder_output,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run the Foldry desktop application");

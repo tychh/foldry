@@ -3,9 +3,9 @@ use std::{collections::BTreeMap, fs, path::PathBuf, time::UNIX_EPOCH};
 use foldry_core::{
     ActionVersion, ArchiveActionSpec, ArchiveFormat, ArchiveOutputDirectory, ArchiveOutputSpec,
     ChecksumAlgorithm, CompressionLevel, ConflictPolicy, ExecutionControl, ExecutionEntrySource,
-    ExecutionPlan, ExecutionWarning, FileSystemObjectKind, PlanOutput, RunId, ScanDisposition,
-    ScanSummary, ScannedEntry, UnreadablePolicy, VerificationMode, VerificationSpec,
-    execute_archive, reserve_output,
+    ExecutionError, ExecutionPhase, ExecutionPlan, ExecutionWarning, FileSystemObjectKind,
+    PlanOutput, RunId, ScanDisposition, ScanSummary, ScannedEntry, UnreadablePolicy,
+    VerificationMode, VerificationSpec, execute_archive, reserve_output,
 };
 
 struct Entries(std::vec::IntoIter<ScannedEntry>);
@@ -57,6 +57,9 @@ fn scanned_file(path: PathBuf, relative_path: &str) -> ScannedEntry {
             .ok()
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .and_then(|duration| u64::try_from(duration.as_nanos()).ok()),
+        created_unix_nanos: None,
+        unix_mode: None,
+        windows_attributes: None,
         link_target: None,
         is_mount_point: false,
         is_network_mount: false,
@@ -70,6 +73,7 @@ fn execution_publishes_all_formats_after_full_verification() {
         ArchiveFormat::Zip,
         ArchiveFormat::TarGz,
         ArchiveFormat::TarZst,
+        ArchiveFormat::SevenZip,
     ] {
         let source = tempfile::tempdir().expect("source");
         let output = tempfile::tempdir().expect("output");
@@ -129,7 +133,7 @@ fn stop_removes_temp_and_reservation_without_publishing() {
         totals: ScanSummary::default(),
     };
     let control = ExecutionControl::default();
-    control.stop();
+    assert!(control.stop());
 
     assert!(execute_archive(&plan, reservation, &mut entries, &control, |_| {}).is_err());
     assert_eq!(
@@ -142,6 +146,55 @@ fn stop_removes_temp_and_reservation_without_publishing() {
     );
     assert!(!temp_path.exists());
     assert!(!lock_path.exists());
+}
+
+#[test]
+fn stop_during_verify_checksum_or_before_publish_never_publishes() {
+    for format in [
+        ArchiveFormat::Zip,
+        ArchiveFormat::TarGz,
+        ArchiveFormat::TarZst,
+        ArchiveFormat::SevenZip,
+    ] {
+        for target_phase in [
+            ExecutionPhase::Verifying,
+            ExecutionPhase::Checksumming,
+            ExecutionPhase::Publishing,
+        ] {
+            let source = tempfile::tempdir().expect("source");
+            let output = tempfile::tempdir().expect("output");
+            let file_path = source.path().join("file");
+            fs::write(&file_path, vec![7_u8; 1024]).expect("source file");
+            let action = action(output.path(), format, UnreadablePolicy::Fail);
+            let PlanOutput::Reserved(reservation) =
+                reserve_output(source.path(), &action.output, RunId::new()).expect("reservation")
+            else {
+                panic!("must reserve");
+            };
+            let final_path = reservation.final_path().to_path_buf();
+            let temp_path = reservation.temp_path().to_path_buf();
+            let lock_path = reservation.reservation_path().to_path_buf();
+            let mut entries = Entries(vec![scanned_file(file_path, "file")].into_iter());
+            let plan = ExecutionPlan {
+                source_root: source.path().to_path_buf(),
+                action,
+                totals: ScanSummary::default(),
+            };
+            let control = ExecutionControl::default();
+
+            let error = execute_archive(&plan, reservation, &mut entries, &control, |progress| {
+                if progress.phase == target_phase {
+                    let _ = control.stop();
+                }
+            })
+            .expect_err("phase stop must cancel execution");
+
+            assert!(matches!(error, ExecutionError::Stopped));
+            assert!(!final_path.exists());
+            assert!(!temp_path.exists());
+            assert!(!lock_path.exists());
+        }
+    }
 }
 
 #[test]
@@ -168,6 +221,9 @@ fn warn_and_skip_publishes_remaining_files_with_a_typed_warning() {
         disposition: ScanDisposition::Skipped,
         size: 0,
         modified_unix_nanos: None,
+        created_unix_nanos: None,
+        unix_mode: None,
+        windows_attributes: None,
         link_target: None,
         is_mount_point: false,
         is_network_mount: false,

@@ -1,0 +1,176 @@
+name: Native build
+
+on:
+  workflow_call:
+    inputs:
+      matrix_json:
+        description: JSON build matrix supplied by the caller
+        required: true
+        type: string
+      retention_days:
+        description: Retention period for intermediate workflow artifacts
+        required: false
+        type: number
+        default: 14
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  LANG: en_US.UTF-8
+  LC_ALL: en_US.UTF-8
+
+jobs:
+  quality:
+    name: Quality gate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.17.0
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            rpm \
+            wget
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run quality gate
+        run: pnpm check
+
+  packages:
+    name: ${{ matrix.name }}
+    needs: quality
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix_json) }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.17.0
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            rpm \
+            wget
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build native packages
+        run: >-
+          pnpm exec tauri build
+          --config crates/foldry-tauri/tauri.conf.json
+          --bundles "${{ matrix.bundles }}"
+          --ci
+          --no-sign
+
+      - name: Prepare Linux artifacts
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          for extension in deb rpm AppImage; do
+            package_path="$(find target/release/bundle -type f -name "*.${extension}" -print -quit)"
+            test -n "$package_path"
+            cp "$package_path" release-assets/
+          done
+
+      - name: Prepare macOS artifacts
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          dmg_path="$(find target/release/bundle -type f -name '*.dmg' -print -quit)"
+          app_path="$(find target/release/bundle -type d -name '*.app' -print -quit)"
+          test -n "$dmg_path"
+          test -n "$app_path"
+          cp "$dmg_path" release-assets/
+          version="$(node -p "require('./package.json').version")"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$app_path" \
+            "release-assets/Foldry_${version}_${{ matrix.target }}.app.zip"
+
+      - name: Prepare Windows artifacts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release-assets -Force | Out-Null
+          $packages = @()
+          $packages += Get-ChildItem target/release/bundle/msi -File -Filter *.msi
+          $packages += Get-ChildItem target/release/bundle/nsis -File -Filter *.exe
+          if ($packages.Count -lt 2) {
+            throw "Expected both MSI and NSIS packages"
+          }
+          $packages | ForEach-Object {
+            Copy-Item $_.FullName -Destination release-assets
+          }
+
+      - name: Upload native packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: foldry-${{ matrix.target }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}

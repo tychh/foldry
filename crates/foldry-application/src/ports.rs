@@ -1,11 +1,14 @@
-use std::{fmt, path::PathBuf};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActionId, FolderAction, FolderId, ParserDiagnostic, Plan, PresetId, ProfileId, ResultSummary,
-    RunId, RunState, Settings,
+    ActionId, ArchiveArtifact, FolderAction, FolderId, ParserDiagnostic, Plan, PresetId, ProfileId,
+    ResultSummary, RunId, RunOutcome, RunState, Settings,
 };
 
 pub const DEFAULT_PROFILE_FILENAME: &str = "default.packignore";
@@ -64,6 +67,8 @@ pub struct RunSnapshot {
     pub settings: Settings,
     pub profile_text: String,
     pub profile_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_profile: Option<crate::EffectiveProfileSnapshot>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -76,6 +81,40 @@ pub struct RunRecord {
     pub finished_at: Option<Timestamp>,
     pub snapshot: RunSnapshot,
     pub summary: Option<ResultSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SourceFingerprintSummary {
+    pub included_entries: u64,
+    pub included_bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ActionCheckpoint {
+    pub folder_id: FolderId,
+    pub action_id: ActionId,
+    pub algorithm_version: u16,
+    pub source_fingerprint: String,
+    pub effective_profile_hash: String,
+    pub source_summary: SourceFingerprintSummary,
+    pub run_id: RunId,
+    pub completed_at: Timestamp,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ActionOperationalState {
+    pub folder_id: FolderId,
+    pub action_id: ActionId,
+    pub latest_run_id: RunId,
+    pub latest_outcome: RunOutcome,
+    pub latest_finished_at: Timestamp,
+    pub last_successful_artifact: Option<ArchiveArtifact>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct TerminalRunCommit {
+    pub run: RunRecord,
+    pub checkpoint: Option<ActionCheckpoint>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -132,6 +171,9 @@ pub trait PresetRepository: Send + Sync {
 pub trait RunHistoryRepository: Send + Sync {
     fn insert(&self, run: &RunRecord) -> Result<(), RepositoryError>;
     fn update(&self, run: &RunRecord) -> Result<(), RepositoryError>;
+    fn commit_terminal_run(&self, commit: &TerminalRunCommit) -> Result<(), RepositoryError> {
+        self.update(&commit.run)
+    }
     fn get(&self, run_id: RunId) -> Result<Option<RunRecord>, RepositoryError>;
     fn page_filtered(
         &self,
@@ -159,6 +201,25 @@ pub trait RunHistoryRepository: Send + Sync {
         max_entries: u32,
         unlimited: bool,
     ) -> Result<u64, RepositoryError>;
+    fn operational_states(
+        &self,
+        _folder_ids: &[FolderId],
+    ) -> Result<Vec<ActionOperationalState>, RepositoryError> {
+        Ok(Vec::new())
+    }
+    fn checkpoints(
+        &self,
+        _folder_ids: &[FolderId],
+    ) -> Result<Vec<ActionCheckpoint>, RepositoryError> {
+        Ok(Vec::new())
+    }
+    fn forget_action(
+        &self,
+        _folder_id: FolderId,
+        _action_id: ActionId,
+    ) -> Result<(), RepositoryError> {
+        Ok(())
+    }
 }
 
 pub trait LogRepository: Send + Sync {
@@ -171,6 +232,14 @@ pub trait LogRepository: Send + Sync {
         max_runs: u32,
         unlimited: bool,
     ) -> Result<u64, RepositoryError>;
+}
+
+pub trait OutputDirectoryRegistry: Send + Sync {
+    fn register(&self, directory: &Path) -> Result<(), RepositoryError>;
+    fn known_directories(&self) -> Result<Vec<PathBuf>, RepositoryError>;
+    fn prune_except(&self, _directories: &[PathBuf]) -> Result<u64, RepositoryError> {
+        Ok(0)
+    }
 }
 
 pub trait Clock: Send + Sync {

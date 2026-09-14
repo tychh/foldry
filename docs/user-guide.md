@@ -48,7 +48,7 @@ A folder can have multiple ordered actions. Each action has:
 - an enabled switch;
 - an optional Ignore Profile override;
 - output location and filename template;
-- ZIP, TAR.GZ, or TAR.ZST format;
+- ZIP, TAR.GZ, TAR.ZST, or 7z format;
 - fast, balanced, or maximum compression;
 - skip, safe replace, or increment conflict handling;
 - root-folder inclusion;
@@ -64,11 +64,34 @@ extension exactly once.
 
 ### Archive formats
 
-| Format  | Best fit                                     | Important limitation                              |
-| ------- | -------------------------------------------- | ------------------------------------------------- |
-| ZIP     | Maximum compatibility, especially on Windows | Unix metadata and symlink extraction vary by tool |
-| TAR.GZ  | Broad macOS/Linux support                    | Usually slower or larger than Zstandard           |
-| TAR.ZST | Fast, compact archives                       | Built-in extractors support it less often         |
+| Format  | Best fit                                       | Important limitation                              |
+| ------- | ---------------------------------------------- | ------------------------------------------------- |
+| ZIP     | Maximum compatibility, especially on Windows   | Unix metadata and symlink extraction vary by tool |
+| TAR.GZ  | Broad macOS/Linux support                      | Usually slower or larger than Zstandard           |
+| TAR.ZST | Fast, compact archives                         | Built-in extractors support it less often         |
+| 7z      | Dense LZMA2 compression without external tools | Native extractor support varies by platform       |
+
+Foldry preserves modification times and basic Unix permission/type bits where the
+format supports them. ZIP and 7z also preserve reliable creation times; 7z
+preserves basic Windows attributes. Access time, ownership, ACLs, xattrs,
+resource forks, sparse layout, hard-link identity, and alternate data streams are
+outside the v3 scope.
+
+| Format  | Modification time | Creation time | Unix mode | Basic Windows attributes | Symlinks |
+| ------- | ----------------- | ------------- | --------- | ------------------------ | -------- |
+| ZIP     | Yes, 1 s          | Yes, 1 s      | Yes       | No                       | Yes      |
+| TAR.GZ  | Yes, 1 s          | No            | Yes       | No                       | Yes      |
+| TAR.ZST | Yes, 1 s          | No            | Yes       | No                       | Yes      |
+| 7z      | Yes, 100 ns       | Yes, 100 ns   | Yes       | Yes                      | Yes      |
+
+The matrix is mirrored by `ARCHIVE_FORMAT_CAPABILITIES` in the Rust core and is
+covered by independent-reader archive tests. Actual restoration still depends on
+the extractor and destination filesystem.
+
+Missing sources remain configured. Use **Locate folder** from the card menu to
+attach a moved source while preserving Folder identity, actions, history, and
+change checkpoints. **Run changed** performs a fresh backend assessment and queues
+only enabled actions whose included source view or effective profile changed.
 
 Foldry stores symlinks as links and never follows them. It currently does not
 preserve hard-link relationships, sparse allocation, ownership, ACLs, extended

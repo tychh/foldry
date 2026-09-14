@@ -13,9 +13,9 @@ use std::{
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ArchiveActionSpec, ArchiveFormat, ChecksumAlgorithm, FileSystemObjectKind, OutputReservation,
-    ScanDisposition, ScanSummary, ScannedEntry, UnreadablePolicy, VerificationMode,
-    create_archive_writer, normalize_relative_path,
+    ArchiveActionSpec, ArchiveFormat, CancellationToken, ChecksumAlgorithm, FileSystemObjectKind,
+    OutputReservation, ScanDisposition, ScanSummary, ScannedEntry, UnreadablePolicy,
+    VerificationMode, create_archive_writer, normalize_relative_path,
 };
 
 pub trait ExecutionEntrySource {
@@ -38,8 +38,18 @@ pub enum ExecutionWarning {
     ZipSymlinkPortability(String),
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ExecutionPhase {
+    #[default]
+    Archiving,
+    Verifying,
+    Checksumming,
+    Publishing,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ExecutionProgress {
+    pub phase: ExecutionPhase,
     pub processed_entries: u64,
     pub processed_files: u64,
     pub processed_bytes: u64,
@@ -64,7 +74,8 @@ pub struct ExecutionControl {
 struct ControlInner {
     paused: Mutex<bool>,
     resumed: Condvar,
-    stopped: AtomicBool,
+    stopped: Arc<AtomicBool>,
+    publish_committed: Mutex<bool>,
 }
 
 impl ExecutionControl {
@@ -77,9 +88,20 @@ impl ExecutionControl {
         self.inner.resumed.notify_all();
     }
 
-    pub fn stop(&self) {
+    /// Requests cancellation unless archive publication already crossed its commit point.
+    #[must_use]
+    pub fn stop(&self) -> bool {
+        let committed = self
+            .inner
+            .publish_committed
+            .lock()
+            .expect("publish commit state");
+        if *committed {
+            return false;
+        }
         self.inner.stopped.store(true, Ordering::Release);
         self.inner.resumed.notify_all();
+        true
     }
 
     /// Waits at an entry boundary while paused and returns `false` after stop.
@@ -112,6 +134,35 @@ impl ExecutionControl {
     #[must_use]
     pub fn is_paused(&self) -> bool {
         *self.inner.paused.lock().expect("pause state")
+    }
+
+    /// Atomically commits publication against concurrent stop requests.
+    #[must_use]
+    pub fn try_commit_publish(&self) -> bool {
+        let mut committed = self
+            .inner
+            .publish_committed
+            .lock()
+            .expect("publish commit state");
+        if self.is_stopped() {
+            return false;
+        }
+        *committed = true;
+        true
+    }
+
+    #[must_use]
+    pub fn is_publish_committed(&self) -> bool {
+        *self
+            .inner
+            .publish_committed
+            .lock()
+            .expect("publish commit state")
+    }
+
+    #[must_use]
+    pub fn cancellation_token(&self) -> CancellationToken {
+        CancellationToken::from_flag(Arc::clone(&self.inner.stopped))
     }
 }
 
@@ -269,22 +320,39 @@ pub fn execute_archive(
     let file = writer
         .finish()
         .map_err(|error| ExecutionError::Archive(error.to_string()))?;
+    control.check_stop()?;
     file.sync_all()
         .map_err(|error| ExecutionError::Archive(error.to_string()))?;
     drop(file);
+    control.check_stop()?;
+    progress.phase = ExecutionPhase::Verifying;
+    progress.current_path = None;
+    on_progress(&progress);
+    control.check_stop()?;
     verify_archive(
         reservation.temp_path(),
         plan.action.output.format,
         plan.action.verification.mode,
+        control,
     )?;
+    control.check_stop()?;
     let checksum_sha256 = if plan.action.verification.checksum == ChecksumAlgorithm::Sha256 {
-        Some(file_sha256(reservation.temp_path())?)
+        progress.phase = ExecutionPhase::Checksumming;
+        on_progress(&progress);
+        control.check_stop()?;
+        Some(file_sha256(reservation.temp_path(), control)?)
     } else {
         None
     };
+    control.check_stop()?;
     let output_size = fs::metadata(reservation.temp_path())
         .map_err(|error| ExecutionError::Archive(error.to_string()))?
         .len();
+    progress.phase = ExecutionPhase::Publishing;
+    on_progress(&progress);
+    if !control.try_commit_publish() {
+        return Err(ExecutionError::Stopped);
+    }
     let output_path = reservation
         .publish()
         .map_err(|error| ExecutionError::Publish(error.to_string()))?;
@@ -521,13 +589,20 @@ fn verify_archive(
     path: &Path,
     format: ArchiveFormat,
     mode: VerificationMode,
+    control: &ExecutionControl,
 ) -> Result<(), ExecutionError> {
+    control.check_stop()?;
     match format {
         ArchiveFormat::Zip => {
-            let mut archive = zip::ZipArchive::new(File::open(path).map_err(verification)?)
-                .map_err(verification)?;
+            let file = File::open(path).map_err(verification)?;
+            let mut archive = zip::ZipArchive::new(CancellationReader {
+                reader: file,
+                control,
+            })
+            .map_err(verification)?;
             if mode == VerificationMode::Full {
                 for index in 0..archive.len() {
+                    control.check_stop()?;
                     io::copy(
                         &mut archive.by_index(index).map_err(verification)?,
                         &mut io::sink(),
@@ -537,21 +612,56 @@ fn verify_archive(
             }
         }
         ArchiveFormat::TarGz => verify_tar(
-            flate2::read::GzDecoder::new(File::open(path).map_err(verification)?),
+            flate2::read::GzDecoder::new(CancellationReader {
+                reader: File::open(path).map_err(verification)?,
+                control,
+            }),
             mode,
+            control,
         )?,
         ArchiveFormat::TarZst => verify_tar(
-            zstd::stream::read::Decoder::new(File::open(path).map_err(verification)?)
-                .map_err(verification)?,
+            zstd::stream::read::Decoder::new(CancellationReader {
+                reader: File::open(path).map_err(verification)?,
+                control,
+            })
+            .map_err(verification)?,
             mode,
+            control,
         )?,
+        ArchiveFormat::SevenZip => {
+            let reader = CancellationReader {
+                reader: File::open(path).map_err(verification)?,
+                control,
+            };
+            let mut archive =
+                sevenz_rust2::ArchiveReader::new(reader, sevenz_rust2::Password::empty())
+                    .map_err(verification)?;
+            if mode == VerificationMode::Full {
+                archive
+                    .for_each_entries(&mut consume_7z_entry)
+                    .map_err(verification)?;
+            }
+        }
     }
     Ok(())
 }
 
-fn verify_tar<R: Read>(reader: R, mode: VerificationMode) -> Result<(), ExecutionError> {
+fn consume_7z_entry(
+    _entry: &sevenz_rust2::ArchiveEntry,
+    reader: &mut dyn Read,
+) -> Result<bool, sevenz_rust2::Error> {
+    io::copy(reader, &mut io::sink())?;
+    Ok(true)
+}
+
+fn verify_tar<R: Read>(
+    reader: R,
+    mode: VerificationMode,
+    control: &ExecutionControl,
+) -> Result<(), ExecutionError> {
     let mut archive = tar::Archive::new(reader);
     for entry in archive.entries().map_err(verification)? {
+        control.check_stop()?;
         let mut entry = entry.map_err(verification)?;
         if mode == VerificationMode::Full {
             io::copy(&mut entry, &mut io::sink()).map_err(verification)?;
@@ -560,11 +670,38 @@ fn verify_tar<R: Read>(reader: R, mode: VerificationMode) -> Result<(), Executio
     Ok(())
 }
 
-fn file_sha256(path: &Path) -> Result<String, ExecutionError> {
-    let mut file = File::open(path).map_err(verification)?;
+fn file_sha256(path: &Path, control: &ExecutionControl) -> Result<String, ExecutionError> {
+    let file = File::open(path).map_err(verification)?;
+    let mut file = CancellationReader {
+        reader: file,
+        control,
+    };
     let mut hasher = Sha256::new();
     io::copy(&mut file, &mut HashWriter(&mut hasher)).map_err(verification)?;
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+struct CancellationReader<'a, R> {
+    reader: R,
+    control: &'a ExecutionControl,
+}
+
+impl<R: Read> Read for CancellationReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.control
+            .check_stop()
+            .map_err(|_| io::Error::new(io::ErrorKind::Interrupted, "execution was stopped"))?;
+        self.reader.read(buffer)
+    }
+}
+
+impl<R: Seek> Seek for CancellationReader<'_, R> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.control
+            .check_stop()
+            .map_err(|_| io::Error::new(io::ErrorKind::Interrupted, "execution was stopped"))?;
+        self.reader.seek(position)
+    }
 }
 
 struct HashWriter<'a>(&'a mut Sha256);
@@ -615,8 +752,28 @@ mod tests {
         control.pause();
         let worker_control = control.clone();
         let worker = thread::spawn(move || worker_control.before_entry());
-        control.stop();
+        assert!(control.stop());
 
         assert!(worker.join().expect("worker").is_err());
+    }
+
+    #[test]
+    fn stop_wins_the_publish_commit_race() {
+        let control = ExecutionControl::default();
+
+        assert!(control.stop());
+        assert!(!control.try_commit_publish());
+        assert!(control.is_stopped());
+        assert!(!control.is_publish_committed());
+    }
+
+    #[test]
+    fn publish_commit_wins_against_a_late_stop() {
+        let control = ExecutionControl::default();
+
+        assert!(control.try_commit_publish());
+        assert!(!control.stop());
+        assert!(!control.is_stopped());
+        assert!(control.is_publish_committed());
     }
 }

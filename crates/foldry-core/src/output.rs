@@ -10,7 +10,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ArchiveFormat, ArchiveOutputSpec, ConflictPolicy, RunId};
 
-pub const RESERVATION_METADATA_VERSION: u16 = 1;
+pub const RESERVATION_METADATA_VERSION: u16 = 2;
+pub const LEGACY_RESERVATION_METADATA_VERSION: u16 = 1;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReservationOwnerKind {
+    Desktop,
+    Cli,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReservationOwner {
+    pub kind: ReservationOwnerKind,
+    pub instance_id: String,
+    pub directory_scope_id: String,
+    pub process_id: u32,
+    pub process_started_unix_seconds: u64,
+}
 
 /// Durable ownership proof used by startup recovery after an unclean shutdown.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -20,6 +37,16 @@ pub struct ReservationMetadata {
     pub process_id: u32,
     pub created_unix_seconds: i64,
     pub temp_file_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_kind: Option<ReservationOwnerKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_scope_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_started_unix_seconds: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -98,6 +125,25 @@ pub fn reserve_output(
     spec: &ArchiveOutputSpec,
     run_id: RunId,
 ) -> Result<PlanOutput, OutputPlanError> {
+    reserve_output_with_owner(source, spec, run_id, None)
+}
+
+/// Resolves and reserves an output with process ownership metadata for crash recovery.
+pub fn reserve_output_owned(
+    source: &Path,
+    spec: &ArchiveOutputSpec,
+    run_id: RunId,
+    owner: &ReservationOwner,
+) -> Result<PlanOutput, OutputPlanError> {
+    reserve_output_with_owner(source, spec, run_id, Some(owner))
+}
+
+fn reserve_output_with_owner(
+    source: &Path,
+    spec: &ArchiveOutputSpec,
+    run_id: RunId,
+    owner: Option<&ReservationOwner>,
+) -> Result<PlanOutput, OutputPlanError> {
     let canonical_source = fs::canonicalize(source)
         .map_err(|_| OutputPlanError::InvalidSource(source.to_path_buf()))?;
     if !canonical_source.is_dir() {
@@ -126,14 +172,14 @@ pub fn reserve_output(
             if base_path.exists() {
                 return Ok(PlanOutput::Skipped { path: base_path });
             }
-            match try_reserve(base_path.clone(), spec.conflict_policy, run_id) {
+            match try_reserve(base_path.clone(), spec.conflict_policy, run_id, owner) {
                 Ok(reservation) => Ok(PlanOutput::Reserved(reservation)),
                 Err(OutputPlanError::Conflict(_)) => Ok(PlanOutput::Skipped { path: base_path }),
                 Err(error) => Err(error),
             }
         }
         ConflictPolicy::Overwrite => {
-            try_reserve(base_path, spec.conflict_policy, run_id).map(PlanOutput::Reserved)
+            try_reserve(base_path, spec.conflict_policy, run_id, owner).map(PlanOutput::Reserved)
         }
         ConflictPolicy::Increment => {
             for index in 0..10_000_u32 {
@@ -145,7 +191,7 @@ pub fn reserve_output(
                 if candidate.exists() {
                     continue;
                 }
-                match try_reserve(candidate, spec.conflict_policy, run_id) {
+                match try_reserve(candidate, spec.conflict_policy, run_id, owner) {
                     Ok(reservation) => return Ok(PlanOutput::Reserved(reservation)),
                     Err(OutputPlanError::Conflict(_)) => {}
                     Err(error) => return Err(error),
@@ -160,6 +206,7 @@ fn try_reserve(
     final_path: PathBuf,
     policy: ConflictPolicy,
     run_id: RunId,
+    owner: Option<&ReservationOwner>,
 ) -> Result<OutputReservation, OutputPlanError> {
     let file_name = final_path
         .file_name()
@@ -183,11 +230,18 @@ fn try_reserve(
             }
         })?;
     let metadata = ReservationMetadata {
-        version: RESERVATION_METADATA_VERSION,
+        version: owner.map_or(LEGACY_RESERVATION_METADATA_VERSION, |_| {
+            RESERVATION_METADATA_VERSION
+        }),
         run_id,
-        process_id: std::process::id(),
+        process_id: owner.map_or_else(std::process::id, |owner| owner.process_id),
         created_unix_seconds: unix_seconds(SystemTime::now()),
         temp_file_name,
+        final_file_name: owner.map(|_| file_name.into_owned()),
+        owner_kind: owner.map(|owner| owner.kind),
+        instance_id: owner.map(|owner| owner.instance_id.clone()),
+        directory_scope_id: owner.map(|owner| owner.directory_scope_id.clone()),
+        process_started_unix_seconds: owner.map(|owner| owner.process_started_unix_seconds),
     };
     let encoded = serde_json::to_vec(&metadata).map_err(|source| OutputPlanError::Io {
         path: reservation_path.clone(),
@@ -311,6 +365,7 @@ fn archive_filename(name: &str, format: ArchiveFormat) -> Result<String, OutputP
         ArchiveFormat::Zip => ".zip",
         ArchiveFormat::TarGz => ".tar.gz",
         ArchiveFormat::TarZst => ".tar.zst",
+        ArchiveFormat::SevenZip => ".7z",
     };
     Ok(if name.to_ascii_lowercase().ends_with(extension) {
         name.to_owned()
@@ -360,6 +415,7 @@ mod tests {
                 Just(ArchiveFormat::Zip),
                 Just(ArchiveFormat::TarGz),
                 Just(ArchiveFormat::TarZst),
+                Just(ArchiveFormat::SevenZip),
             ],
         ) {
             if let Ok(filename) = archive_filename(&name, format) {

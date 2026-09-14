@@ -32,6 +32,9 @@ pub enum ArchiveFormatDto {
     Zip,
     TarGz,
     TarZst,
+    #[serde(rename = "7z")]
+    #[ts(rename = "7z")]
+    SevenZip,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -143,11 +146,42 @@ pub struct FolderActionDto {
 pub struct FolderDto {
     pub id: FolderIdDto,
     pub source: String,
+    pub created_at: String,
     pub listed: bool,
     pub enabled: bool,
     pub default_profile_id: ProfileIdDto,
     pub actions: Vec<FolderActionDto>,
     pub extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename = "FolderAvailability", rename_all = "snake_case")]
+pub enum FolderAvailabilityDto {
+    Available,
+    Missing,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[ts(rename = "FolderAvailabilityResult")]
+pub struct FolderAvailabilityResultDto {
+    pub folder_id: FolderIdDto,
+    pub generation: String,
+    pub availability: FolderAvailabilityDto,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename = "ChangeState", rename_all = "snake_case")]
+pub enum ChangeStateDto {
+    Checking,
+    Unchanged,
+    Changed,
+    NoCheckpoint,
+    Missing,
+    Unknown,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -182,6 +216,18 @@ pub enum AppearanceDto {
 pub enum BrowserViewDto {
     Tree,
     List,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename = "FolderSortMode", rename_all = "snake_case")]
+pub enum FolderSortModeDto {
+    NameAscending,
+    NameDescending,
+    RecentlyAdded,
+    OldestAdded,
+    RecentlyRun,
+    LeastRecentlyRun,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -242,6 +288,7 @@ pub struct SettingsDto {
     pub execution: ExecutionSettingsDto,
     pub history: HistorySettingsDto,
     pub browser: BrowserSettingsDto,
+    pub folder_sort_mode: FolderSortModeDto,
     pub extensions: BTreeMap<String, Value>,
 }
 
@@ -460,6 +507,7 @@ pub enum RunStateDto {
     Failed,
     Stopped,
     Interrupted,
+    Skipped,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -496,6 +544,7 @@ pub enum WarningCodeDto {
     SpecialFileSkipped,
     UnreadableEntrySkipped,
     SourceEntryChanged,
+    DynamicRuleSourceMissing,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -552,6 +601,14 @@ pub enum RunOutcomeDto {
     Failed,
     Stopped,
     Interrupted,
+    Skipped,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename = "SkipReason", rename_all = "snake_case")]
+pub enum SkipReasonDto {
+    OutputConflict,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -565,6 +622,69 @@ pub struct ResultSummaryDto {
     pub artifact: Option<ArchiveArtifactDto>,
     pub warnings: Vec<FoldryWarningDto>,
     pub error: Option<FoldryErrorDto>,
+    pub skip_reason: Option<SkipReasonDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(rename = "FolderOperationalSummary")]
+pub struct FolderOperationalSummaryDto {
+    pub folder_id: FolderIdDto,
+    pub availability: FolderAvailabilityDto,
+    pub availability_diagnostic: Option<String>,
+    pub latest_outcome: Option<RunOutcomeDto>,
+    pub latest_run_at: Option<String>,
+    pub last_successful_artifact: Option<ArchiveArtifactDto>,
+    pub artifact_available: bool,
+    pub change_state: ChangeStateDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[ts(rename = "RunChangedResult")]
+pub struct RunChangedResultDto {
+    pub assessed: u64,
+    pub queued: u64,
+    pub unchanged: u64,
+    pub missing: u64,
+    pub invalid: u64,
+    pub already_running: u64,
+    pub output_conflict_skipped: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(rename = "ChangeAssessmentProgress")]
+pub struct ChangeAssessmentProgressDto {
+    /// Decimal string to avoid JavaScript integer precision loss.
+    pub generation: String,
+    pub completed: u64,
+    pub total: u64,
+    pub current_folder: Option<String>,
+    pub cancelled: bool,
+    pub finished: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(rename = "ChangeAssessmentResult")]
+pub struct ChangeAssessmentResultDto {
+    /// Decimal string to avoid JavaScript integer precision loss.
+    pub generation: String,
+    pub cancelled: bool,
+    pub summaries: Vec<FolderOperationalSummaryDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(rename = "ScheduledRun")]
+pub struct ScheduledRunDto {
+    pub record: RunRecordDto,
+    pub queue_position: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(rename = "SchedulerSnapshot")]
+pub struct SchedulerSnapshotDto {
+    pub runs: Vec<ScheduledRunDto>,
+    pub globally_paused: bool,
+    pub active: u64,
+    pub waiting: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -724,6 +844,7 @@ pub struct BootstrapSnapshotDto {
     pub presets: Vec<StoredPresetDto>,
     pub active_runs: Vec<RunRecordDto>,
     pub recent_runs: Vec<RunRecordDto>,
+    pub folder_summaries: Vec<FolderOperationalSummaryDto>,
     pub previews: Vec<PreviewSnapshotDto>,
     pub roots: Vec<BrowserRootDto>,
     pub storage: StoragePathsDto,
@@ -775,6 +896,7 @@ impl From<crate::ArchiveFormat> for ArchiveFormatDto {
             crate::ArchiveFormat::Zip => Self::Zip,
             crate::ArchiveFormat::TarGz => Self::TarGz,
             crate::ArchiveFormat::TarZst => Self::TarZst,
+            crate::ArchiveFormat::SevenZip => Self::SevenZip,
         }
     }
 }
@@ -907,6 +1029,7 @@ impl From<&crate::Folder> for FolderDto {
         Self {
             id: FolderIdDto(value.id.to_string()),
             source: value.source.to_string_lossy().into_owned(),
+            created_at: value.created_at.to_string(),
             listed: value.listed,
             enabled: value.enabled,
             default_profile_id: ProfileIdDto(value.default_profile_id.to_string()),
@@ -1081,6 +1204,32 @@ impl From<BrowserViewDto> for crate::BrowserView {
     }
 }
 
+impl From<crate::FolderSortMode> for FolderSortModeDto {
+    fn from(value: crate::FolderSortMode) -> Self {
+        match value {
+            crate::FolderSortMode::NameAscending => Self::NameAscending,
+            crate::FolderSortMode::NameDescending => Self::NameDescending,
+            crate::FolderSortMode::RecentlyAdded => Self::RecentlyAdded,
+            crate::FolderSortMode::OldestAdded => Self::OldestAdded,
+            crate::FolderSortMode::RecentlyRun => Self::RecentlyRun,
+            crate::FolderSortMode::LeastRecentlyRun => Self::LeastRecentlyRun,
+        }
+    }
+}
+
+impl From<FolderSortModeDto> for crate::FolderSortMode {
+    fn from(value: FolderSortModeDto) -> Self {
+        match value {
+            FolderSortModeDto::NameAscending => Self::NameAscending,
+            FolderSortModeDto::NameDescending => Self::NameDescending,
+            FolderSortModeDto::RecentlyAdded => Self::RecentlyAdded,
+            FolderSortModeDto::OldestAdded => Self::OldestAdded,
+            FolderSortModeDto::RecentlyRun => Self::RecentlyRun,
+            FolderSortModeDto::LeastRecentlyRun => Self::LeastRecentlyRun,
+        }
+    }
+}
+
 impl From<&crate::ArchiveDefaults> for ArchiveDefaultsDto {
     fn from(value: &crate::ArchiveDefaults) -> Self {
         Self {
@@ -1143,6 +1292,7 @@ impl From<&crate::Settings> for SettingsDto {
                 view: value.browser.view.into(),
                 extensions: value.browser.extensions.clone(),
             },
+            folder_sort_mode: value.folder_sort_mode.into(),
             extensions: value.extensions.clone(),
         }
     }
@@ -1261,6 +1411,7 @@ impl From<crate::RunState> for RunStateDto {
             crate::RunState::Failed => Self::Failed,
             crate::RunState::Stopped => Self::Stopped,
             crate::RunState::Interrupted => Self::Interrupted,
+            crate::RunState::Skipped => Self::Skipped,
         }
     }
 }
@@ -1333,6 +1484,39 @@ impl From<&crate::ResultSummary> for ResultSummaryDto {
             artifact: value.artifact.as_ref().map(Into::into),
             warnings: value.warnings.iter().map(Into::into).collect(),
             error: value.error.as_ref().map(Into::into),
+            skip_reason: value.skip_reason.map(|reason| match reason {
+                crate::SkipReason::OutputConflict => SkipReasonDto::OutputConflict,
+            }),
+        }
+    }
+}
+
+impl From<&crate::FolderOperationalSummary> for FolderOperationalSummaryDto {
+    fn from(value: &crate::FolderOperationalSummary) -> Self {
+        let (availability, availability_diagnostic) = match &value.availability {
+            crate::FolderAvailability::Available => (FolderAvailabilityDto::Available, None),
+            crate::FolderAvailability::Missing => (FolderAvailabilityDto::Missing, None),
+            crate::FolderAvailability::Unavailable(message) => {
+                (FolderAvailabilityDto::Unavailable, Some(message.clone()))
+            }
+        };
+        let change_state = match value.change_state {
+            crate::ChangeState::Checking => ChangeStateDto::Checking,
+            crate::ChangeState::Unchanged => ChangeStateDto::Unchanged,
+            crate::ChangeState::Changed => ChangeStateDto::Changed,
+            crate::ChangeState::NoCheckpoint => ChangeStateDto::NoCheckpoint,
+            crate::ChangeState::Missing => ChangeStateDto::Missing,
+            crate::ChangeState::Unknown => ChangeStateDto::Unknown,
+        };
+        Self {
+            folder_id: FolderIdDto(value.folder_id.to_string()),
+            availability,
+            availability_diagnostic,
+            latest_outcome: value.latest_outcome.map(run_outcome),
+            latest_run_at: value.latest_run_at.map(|timestamp| timestamp.to_string()),
+            last_successful_artifact: value.last_successful_artifact.as_ref().map(Into::into),
+            artifact_available: value.artifact_available,
+            change_state,
         }
     }
 }
@@ -1401,6 +1585,7 @@ fn warning_code(code: crate::WarningCode) -> WarningCodeDto {
         crate::WarningCode::SpecialFileSkipped => WarningCodeDto::SpecialFileSkipped,
         crate::WarningCode::UnreadableEntrySkipped => WarningCodeDto::UnreadableEntrySkipped,
         crate::WarningCode::SourceEntryChanged => WarningCodeDto::SourceEntryChanged,
+        crate::WarningCode::DynamicRuleSourceMissing => WarningCodeDto::DynamicRuleSourceMissing,
     }
 }
 
@@ -1427,6 +1612,7 @@ fn run_outcome(outcome: crate::RunOutcome) -> RunOutcomeDto {
         crate::RunOutcome::Failed => RunOutcomeDto::Failed,
         crate::RunOutcome::Stopped => RunOutcomeDto::Stopped,
         crate::RunOutcome::Interrupted => RunOutcomeDto::Interrupted,
+        crate::RunOutcome::Skipped => RunOutcomeDto::Skipped,
     }
 }
 
@@ -1526,6 +1712,26 @@ impl From<&crate::RunRecord> for RunRecordDto {
     }
 }
 
+impl From<&crate::ScheduledRun> for ScheduledRunDto {
+    fn from(value: &crate::ScheduledRun) -> Self {
+        Self {
+            record: (&value.record).into(),
+            queue_position: value.queue_position,
+        }
+    }
+}
+
+impl From<&crate::SchedulerSnapshot> for SchedulerSnapshotDto {
+    fn from(value: &crate::SchedulerSnapshot) -> Self {
+        Self {
+            runs: value.runs.iter().map(Into::into).collect(),
+            globally_paused: value.globally_paused,
+            active: value.active,
+            waiting: value.waiting,
+        }
+    }
+}
+
 impl From<crate::LogLevel> for LogLevelDto {
     fn from(value: crate::LogLevel) -> Self {
         match value {
@@ -1606,6 +1812,7 @@ impl TryFrom<SettingsDto> for crate::Settings {
                 view: value.browser.view.into(),
                 extensions: value.browser.extensions,
             },
+            folder_sort_mode: value.folder_sort_mode.into(),
             extensions: value.extensions,
         })
     }
@@ -1635,6 +1842,10 @@ impl TryFrom<FolderDto> for crate::Folder {
         Ok(Self {
             id: parse_id("folder", &value.id.0)?,
             source: PathBuf::from(value.source),
+            created_at: value
+                .created_at
+                .parse()
+                .map_err(|error| format!("invalid folder created_at: {error}"))?,
             listed: value.listed,
             enabled: value.enabled,
             default_profile_id: parse_id("profile", &value.default_profile_id.0)?,
@@ -1735,6 +1946,7 @@ impl From<ArchiveFormatDto> for crate::ArchiveFormat {
             ArchiveFormatDto::Zip => Self::Zip,
             ArchiveFormatDto::TarGz => Self::TarGz,
             ArchiveFormatDto::TarZst => Self::TarZst,
+            ArchiveFormatDto::SevenZip => Self::SevenZip,
         }
     }
 }
@@ -1841,10 +2053,14 @@ pub fn typescript_bindings() -> String {
     declaration!(ActionSpecDto);
     declaration!(FolderActionDto);
     declaration!(FolderDto);
+    declaration!(FolderAvailabilityDto);
+    declaration!(FolderAvailabilityResultDto);
+    declaration!(ChangeStateDto);
     declaration!(PlanDto);
     declaration!(LocaleDto);
     declaration!(AppearanceDto);
     declaration!(BrowserViewDto);
+    declaration!(FolderSortModeDto);
     declaration!(ArchiveDefaultsDto);
     declaration!(ExecutionSettingsDto);
     declaration!(RetentionPolicyDto);
@@ -1879,7 +2095,14 @@ pub fn typescript_bindings() -> String {
     declaration!(FoldryErrorDto);
     declaration!(ArchiveArtifactDto);
     declaration!(RunOutcomeDto);
+    declaration!(SkipReasonDto);
     declaration!(ResultSummaryDto);
+    declaration!(FolderOperationalSummaryDto);
+    declaration!(RunChangedResultDto);
+    declaration!(ChangeAssessmentProgressDto);
+    declaration!(ChangeAssessmentResultDto);
+    declaration!(ScheduledRunDto);
+    declaration!(SchedulerSnapshotDto);
     declaration!(RunEventKindDto);
     declaration!(RunEventDto);
     declaration!(ValidationCodeDto);

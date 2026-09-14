@@ -27,6 +27,7 @@ pub enum RunState {
     Failed,
     Stopped,
     Interrupted,
+    Skipped,
 }
 
 /// Coarse phase used for bounded progress updates.
@@ -60,6 +61,7 @@ pub enum WarningCode {
     SpecialFileSkipped,
     UnreadableEntrySkipped,
     SourceEntryChanged,
+    DynamicRuleSourceMissing,
 }
 
 /// Stable fatal error category shared by CLI and GUI.
@@ -120,6 +122,13 @@ pub enum RunOutcome {
     Failed,
     Stopped,
     Interrupted,
+    Skipped,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipReason {
+    OutputConflict,
 }
 
 /// Bounded final summary retained in history.
@@ -135,6 +144,8 @@ pub struct ResultSummary {
     pub warnings: Vec<FoldryWarning>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<FoldryError>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<SkipReason>,
 }
 
 /// Immediate state/event stream payload. Progress producers aggregate separately.

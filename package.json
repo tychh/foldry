@@ -20,6 +20,7 @@
     "contracts:check": "cargo run -p foldry-application --example export_contracts -- --check",
     "typecheck": "pnpm contracts:check && pnpm --dir frontend typecheck",
     "test": "pnpm --dir frontend test:run && cargo test --workspace --all-targets --exclude foldry-tauri",
+    "test:e2e": "pnpm --dir frontend test:e2e",
     "build": "pnpm --dir frontend build && cargo build --workspace",
     "release:check": "node scripts/check-release-metadata.mjs",
     "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm release:check && pnpm test && pnpm build",

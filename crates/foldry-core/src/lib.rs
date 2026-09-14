@@ -14,9 +14,9 @@ mod profile;
 mod writer;
 
 pub use archive::{
-    ActionVersion, ArchiveActionSpec, ArchiveFormat, ArchiveOutputDirectory, ArchiveOutputSpec,
-    ChecksumAlgorithm, CompressionLevel, ConflictPolicy, UnreadablePolicy, VerificationMode,
-    VerificationSpec,
+    ARCHIVE_FORMAT_CAPABILITIES, ActionVersion, ArchiveActionSpec, ArchiveFormat,
+    ArchiveFormatCapabilities, ArchiveOutputDirectory, ArchiveOutputSpec, ChecksumAlgorithm,
+    CompressionLevel, ConflictPolicy, UnreadablePolicy, VerificationMode, VerificationSpec,
 };
 pub use browser::{
     BrowserError, BrowserNode, BrowserRoot, BrowserRootKind, BrowserSize, FileSystemBrowser,
@@ -25,8 +25,8 @@ pub use diagnostics::{
     DiagnosticCode, DiagnosticSeverity, ParserDiagnostic, SourceLocation, SourceSpan,
 };
 pub use execution::{
-    ExecutionControl, ExecutionEntrySource, ExecutionError, ExecutionPlan, ExecutionProgress,
-    ExecutionResult, ExecutionWarning, execute_archive,
+    ExecutionControl, ExecutionEntrySource, ExecutionError, ExecutionPhase, ExecutionPlan,
+    ExecutionProgress, ExecutionResult, ExecutionWarning, execute_archive,
 };
 pub use filesystem::{
     CancellationToken, CaseSensitivityConfidence, DetectedCaseSensitivity, FileSystemObjectKind,
@@ -35,11 +35,13 @@ pub use filesystem::{
 };
 pub use ids::{ActionId, FolderId, IdParseError, PresetId, PresetIdParseError, ProfileId, RunId};
 pub use matcher::{
-    CompiledProfile, FileSystemCaseSensitivity, MatchPathError, normalize_relative_path,
+    CompiledProfile, EffectiveProfileError, FileSystemCaseSensitivity, MatchPathError,
+    normalize_relative_path, resolve_effective_profile,
 };
 pub use output::{
-    OutputPlanError, OutputReservation, PlanOutput, RESERVATION_METADATA_VERSION,
-    ReservationMetadata, reserve_output,
+    LEGACY_RESERVATION_METADATA_VERSION, OutputPlanError, OutputReservation, PlanOutput,
+    RESERVATION_METADATA_VERSION, ReservationMetadata, ReservationOwner, ReservationOwnerKind,
+    reserve_output, reserve_output_owned,
 };
 pub use parser::{ProfileParseResult, parse_profile};
 pub use preset::{
@@ -48,8 +50,8 @@ pub use preset::{
     preset_content_hash,
 };
 pub use profile::{
-    MatchDecision, MatchReason, MatchResult, Profile, ProfileFormatVersion, ProfileRule,
-    RulePattern,
+    EffectiveProfileSnapshot, MatchDecision, MatchReason, MatchResult, Profile,
+    ProfileFormatVersion, ProfileRule, ResolvedGitignore, RulePattern, RuleSource,
 };
 pub use writer::{ArchiveWriteError, ArchiveWriterBackend, codec_level, create_archive_writer};
 

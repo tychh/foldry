@@ -66,7 +66,7 @@ Download the package for your platform from
 
 - Windows x64: NSIS installer or MSI;
 - macOS Intel or Apple Silicon: architecture-specific DMG;
-- Linux x64: AppImage or Debian package.
+- Linux x64: AppImage, Debian package, or RPM.
 
 Release candidates may initially be unsigned. Read the release notes and your
 operating system's warning before installing. See
@@ -86,9 +86,11 @@ To build Foldry yourself, follow the
 5. Run the action. The final archive appears only after writing and verification
    succeed.
 
-Foldry supports ZIP, TAR.GZ, and TAR.ZST. ZIP is the broadest cross-platform
+Foldry supports ZIP, TAR.GZ, TAR.ZST, and 7z. ZIP is the broadest cross-platform
 choice; TAR.GZ is widely supported on Unix-like systems; TAR.ZST is typically the
-fastest and smallest but may require an external extractor.
+fastest and smallest but may require an external extractor; embedded pure-Rust 7z
+uses LZMA2 and does not require a system `7z` executable. Supported modification
+times and basic permission/attribute metadata are retained per format.
 
 ## Documentation
 
